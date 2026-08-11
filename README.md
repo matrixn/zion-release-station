@@ -119,7 +119,7 @@ Node, PHP, Laravel și Docker sunt unelte de development/build, nu dependențe o
 Ținta inițială este:
 
 ```text
-DSM >= 7.2.2
+DSM >= 7.2.2 (test target curent: DSM 7.4-90075)
 DS1019+
 CPU family: x86_64
 build platform: apollolake

@@ -1,0 +1,44 @@
+package httpapi
+
+import (
+	"context"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/matrixn/zion-release-station/internal/config"
+	"github.com/matrixn/zion-release-station/internal/database"
+)
+
+func TestHealthEndpointReportsReadyDatabase(t *testing.T) {
+	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	cfg := config.Config{
+		BindAddress: "127.0.0.1:24871",
+		DataDir:     t.TempDir(),
+		WebRoot:     t.TempDir(),
+		Version:     "0.1.0-test",
+	}
+	server := NewServer(cfg, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/releasestation/api/v1/system/health", nil)
+	server.http.Handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("expected HTTP 200, got %d", recorder.Code)
+	}
+	if got := recorder.Header().Get("Content-Type"); got != "application/json; charset=utf-8" {
+		t.Fatalf("unexpected content type %q", got)
+	}
+	if body := recorder.Body.String(); body == "" || !strings.Contains(body, `"status":"healthy"`) {
+		t.Fatalf("unexpected health body %q", body)
+	}
+}

@@ -1,0 +1,12 @@
+{
+  ".url": {
+    "SYNO.ZionReleaseStation": {
+      "type": "url",
+      "icon": "images/app_{0}.png",
+      "title": "Zion ReleaseStation",
+      "desc": "Git deployment and release management for Synology DSM.",
+      "url": "/releasestation/",
+      "allUsers": true
+    }
+  }
+}

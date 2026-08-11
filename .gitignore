@@ -1,0 +1,12 @@
+.env.nas
+.env.nas.*
+!.env.nas.example
+/dist/
+/build/package/
+/build/frontend/
+/build/backend/
+/frontend/node_modules/
+/frontend/dist/
+/var/
+*.log
+*.local

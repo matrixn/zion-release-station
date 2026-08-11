@@ -1,0 +1,28 @@
+{
+  "port-config": {
+    "protocol-file": "port_conf/zion-releasestation.sc"
+  },
+  "web-config": {
+    "nginx-static-config": {
+      "enable": [
+        {
+          "type": "dsm",
+          "relpath": "nginx/releasestation.conf",
+          "ports": [
+            {
+              "port": 24871,
+              "protocol": "tcp",
+              "schema": "http"
+            }
+          ]
+        }
+      ],
+      "disable": [
+        {
+          "type": "dsm",
+          "relpath": "nginx/releasestation.conf"
+        }
+      ]
+    }
+  }
+}

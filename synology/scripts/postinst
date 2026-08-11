@@ -1,0 +1,6 @@
+#!/bin/sh
+set -eu
+
+PKG_VAR="${SYNOPKG_PKGVAR:-/var/packages/zion-releasestation/var}"
+install -d -m 700 "$PKG_VAR" "$PKG_VAR/git/keys" "$PKG_VAR/logs/deployments" "$PKG_VAR/locks" "$PKG_VAR/cache" "$PKG_VAR/runtime"
+exit 0

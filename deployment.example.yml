@@ -1,0 +1,26 @@
+schema: zion.releasestation/v1
+
+project:
+  type: generic
+  public_dir: .
+
+git:
+  branch: main
+
+deployment:
+  strategy: in_place
+  retain_releases: 5
+  pending_policy: latest
+
+pipeline:
+  - id: checkout
+    name: Checkout
+    type: internal
+
+health:
+  url: https://example.com/health
+  expected_status:
+    - 200
+  timeout: 15s
+  retries: 5
+  retry_delay: 2s

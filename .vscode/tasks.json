@@ -1,0 +1,53 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "ReleaseStation: Test All",
+      "type": "shell",
+      "command": "make test",
+      "group": "test",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "ReleaseStation: Build SPK",
+      "type": "shell",
+      "command": "make spk",
+      "group": "build",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated" }
+    },
+    {
+      "label": "ReleaseStation: Deploy SPK to DS1019+",
+      "type": "shell",
+      "command": "make deploy-nas",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "focus": true, "clear": true }
+    },
+    {
+      "label": "ReleaseStation: NAS Status",
+      "type": "shell",
+      "command": "make nas-status",
+      "problemMatcher": []
+    },
+    {
+      "label": "ReleaseStation: Restart NAS Package",
+      "type": "shell",
+      "command": "make nas-restart",
+      "problemMatcher": []
+    },
+    {
+      "label": "ReleaseStation: NAS Logs",
+      "type": "shell",
+      "command": "make nas-logs",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "focus": true }
+    },
+    {
+      "label": "ReleaseStation: NAS Health Check",
+      "type": "shell",
+      "command": "make nas-health",
+      "problemMatcher": []
+    }
+  ]
+}

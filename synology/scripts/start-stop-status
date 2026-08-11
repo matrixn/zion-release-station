@@ -1,0 +1,79 @@
+#!/bin/sh
+set -eu
+
+PKG_DEST="${SYNOPKG_PKGDEST:-/var/packages/zion-releasestation/target}"
+PKG_VAR="${SYNOPKG_PKGVAR:-/var/packages/zion-releasestation/var}"
+PID_FILE="$PKG_VAR/runtime/releasestation.pid"
+LOG_FILE="$PKG_VAR/logs/releasestation.log"
+BIN="$PKG_DEST/bin/zion-releasestation"
+
+is_running() {
+    [ -f "$PID_FILE" ] || return 1
+    pid=$(cat "$PID_FILE" 2>/dev/null || true)
+    [ -n "$pid" ] || return 1
+    kill -0 "$pid" 2>/dev/null
+}
+
+cleanup_stale_pid() {
+    if [ -f "$PID_FILE" ] && ! is_running; then
+        rm -f "$PID_FILE"
+    fi
+}
+
+start_service() {
+    cleanup_stale_pid
+    if is_running; then
+        exit 0
+    fi
+    install -d -m 700 "$PKG_VAR/runtime" "$PKG_VAR/logs"
+    RS_DATA_DIR="$PKG_VAR" RS_WEB_ROOT="$PKG_DEST/web" RS_VERSION="0.1.0" \
+        "$BIN" >>"$LOG_FILE" 2>&1 &
+    echo $! >"$PID_FILE"
+    i=0
+    while [ "$i" -lt 20 ]; do
+        if ! kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+            rm -f "$PID_FILE"
+            return 1
+        fi
+        if command -v curl >/dev/null 2>&1 && curl --fail --silent http://127.0.0.1:24871/releasestation/api/v1/system/health >/dev/null 2>&1; then
+            return 0
+        fi
+        i=$((i + 1))
+        sleep 1
+    done
+    return 1
+}
+
+stop_service() {
+    if ! is_running; then
+        rm -f "$PID_FILE"
+        exit 0
+    fi
+    pid=$(cat "$PID_FILE")
+    kill -TERM "$pid" 2>/dev/null || true
+    i=0
+    while [ "$i" -lt 30 ] && kill -0 "$pid" 2>/dev/null; do
+        i=$((i + 1))
+        sleep 1
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -KILL "$pid" 2>/dev/null || true
+    fi
+    rm -f "$PID_FILE"
+}
+
+case "${1:-status}" in
+    start) start_service ;;
+    stop) stop_service ;;
+    status)
+        cleanup_stale_pid
+        if is_running; then
+            exit 0
+        fi
+        exit 1
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|status}" >&2
+        exit 64
+        ;;
+esac

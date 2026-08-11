@@ -1,0 +1,25 @@
+[
+  {
+    "step_title": "ReleaseStation administrator",
+    "items": [
+      {
+        "type": "text",
+        "name": "admin_username",
+        "desc": "Administrator username.",
+        "defaultValue": "admin"
+      },
+      {
+        "type": "password",
+        "name": "admin_password",
+        "desc": "Administrator password. This value is never stored in plaintext.",
+        "defaultValue": ""
+      },
+      {
+        "type": "password",
+        "name": "admin_password_confirm",
+        "desc": "Confirm administrator password.",
+        "defaultValue": ""
+      }
+    ]
+  }
+]
