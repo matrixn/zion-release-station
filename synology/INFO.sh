@@ -15,7 +15,7 @@ os_min_ver="7.2.2-72806"
 thirdparty="yes"
 silent_upgrade="yes"
 dsmuidir="ui"
-dsmappname="SYNO.ZionReleaseStation"
+dsmappname="SYNO.ZionReleaseStation.Instance"
 startstop_restart_services="nginx.service"
 instuninst_restart_services="nginx.service"
 EOF

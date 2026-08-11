@@ -1,12 +1,13 @@
 {
-  ".url": {
-    "SYNO.ZionReleaseStation": {
-      "type": "url",
-      "icon": "images/app_{0}.png",
+  "ZionReleaseStation.js": {
+    "SYNO.ZionReleaseStation.Instance": {
+      "type": "app",
       "title": "Zion ReleaseStation",
-      "desc": "Git deployment and release management for Synology DSM.",
-      "url": "3rdparty/zion-releasestation/index.html",
-      "allUsers": true
+      "appWindow": "SYNO.ZionReleaseStation.Instance",
+      "allUsers": true,
+      "allowMultiInstance": false,
+      "hidden": false,
+      "icon": "images/app_{0}.png"
     }
   }
 }

@@ -1,0 +1,8 @@
+{
+  "ZionReleaseStation.js": {
+    "JSfiles": [
+      "ZionReleaseStation.js"
+    ],
+    "params": "-s -c skip"
+  }
+}
