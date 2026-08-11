@@ -38,7 +38,7 @@ run_remote_sudo() {
   local remote_command="$1"
 
   if [[ -n "$NAS_SUDO_PASS" ]]; then
-    printf '%s\n' "$NAS_SUDO_PASS" | ssh -tt "${ssh_opts[@]}" "$remote" "$NAS_SUDO -S $remote_command"
+    printf '%s\n' "$NAS_SUDO_PASS" | ssh "${ssh_opts[@]}" "$remote" "$NAS_SUDO -S -p '' $remote_command"
     return
   fi
 
