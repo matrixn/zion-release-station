@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
-	"io/fs"
 	"log/slog"
 	"net/http"
 	"os"
@@ -22,16 +21,23 @@ type Server struct {
 	http   *http.Server
 }
 
+const webAccessSettingKey = "web_access_enabled"
+
 func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 	server := &Server{config: cfg, db: db, logger: logger}
+	if _, err := db.Exec(`INSERT OR IGNORE INTO settings(key, value_json, updated_at) VALUES (?, 'true', datetime('now'))`, webAccessSettingKey); err != nil {
+		logger.Error("initialize web access setting", "error", err)
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", server.handleRoot)
 	mux.HandleFunc("/releasestation/api/v1/system/health", server.handleHealth)
 	mux.HandleFunc("/releasestation/api/v1/system/info", server.handleInfo)
 	mux.HandleFunc("/releasestation/api/v1/system/capabilities", server.handleCapabilities)
+	mux.HandleFunc("/releasestation/api/v1/settings/web-access", server.handleWebAccess)
 	mux.HandleFunc("/api/v1/system/health", server.handleHealth)
 	mux.HandleFunc("/api/v1/system/info", server.handleInfo)
 	mux.HandleFunc("/api/v1/system/capabilities", server.handleCapabilities)
+	mux.HandleFunc("/api/v1/settings/web-access", server.handleWebAccess)
 	mux.Handle("/releasestation/", server.staticHandler())
 	server.http = &http.Server{
 		Addr:              cfg.BindAddress,
@@ -104,10 +110,60 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
+func (s *Server) handleWebAccess(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		enabled, err := s.webAccessEnabled(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "SETTINGS_UNAVAILABLE", "Unable to read web access settings.")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"enabled": enabled}})
+	case http.MethodPut:
+		var payload struct {
+			Enabled *bool `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil || payload.Enabled == nil {
+			writeError(w, http.StatusBadRequest, "INVALID_SETTINGS", "The enabled value must be a boolean.")
+			return
+		}
+		value := "false"
+		if *payload.Enabled {
+			value = "true"
+		}
+		if _, err := s.db.ExecContext(r.Context(), `UPDATE settings SET value_json = ?, updated_at = datetime('now') WHERE key = ?`, value, webAccessSettingKey); err != nil {
+			writeError(w, http.StatusInternalServerError, "SETTINGS_UNAVAILABLE", "Unable to save web access settings.")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"enabled": *payload.Enabled}})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only GET and PUT are supported.")
+	}
+}
+
+func (s *Server) webAccessEnabled(ctx context.Context) (bool, error) {
+	var value string
+	if err := s.db.QueryRowContext(ctx, `SELECT value_json FROM settings WHERE key = ?`, webAccessSettingKey).Scan(&value); err != nil {
+		return false, err
+	}
+	var enabled bool
+	if err := json.Unmarshal([]byte(value), &enabled); err != nil {
+		return false, err
+	}
+	return enabled, nil
+}
+
 func (s *Server) staticHandler() http.Handler {
-	root := http.Dir(s.config.WebRoot)
-	files := http.FileServer(root)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		enabled, err := s.webAccessEnabled(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "SETTINGS_UNAVAILABLE", "Unable to read web access settings.")
+			return
+		}
+		if !enabled {
+			http.NotFound(w, r)
+			return
+		}
 		path := strings.TrimPrefix(r.URL.Path, "/releasestation/")
 		if path == "" {
 			path = "index.html"
@@ -117,17 +173,16 @@ func (s *Server) staticHandler() http.Handler {
 			http.NotFound(w, r)
 			return
 		}
-		if _, err := fs.Stat(os.DirFS(s.config.WebRoot), path); err != nil {
+		filePath := filepath.Join(s.config.WebRoot, filepath.FromSlash(path))
+		if _, err := os.Stat(filePath); err != nil {
 			if os.IsNotExist(err) && !strings.Contains(filepath.Base(path), ".") {
-				r.URL.Path = "/releasestation/index.html"
-				files.ServeHTTP(w, r)
+				filePath = filepath.Join(s.config.WebRoot, "index.html")
+			} else {
+				http.NotFound(w, r)
 				return
 			}
-			http.NotFound(w, r)
-			return
 		}
-		r.URL.Path = "/" + path
-		files.ServeHTTP(w, r)
+		http.ServeFile(w, r, filePath)
 	})
 }
 

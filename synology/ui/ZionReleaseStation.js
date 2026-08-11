@@ -24,6 +24,7 @@
     '.zion-native-card h2{margin:0 0 14px;font-size:14px;font-weight:600}.zion-native-card p{margin:0;color:#687482;font-size:12px;line-height:1.55}',
     '.zion-native-status{display:flex;align-items:center;gap:9px;margin-bottom:13px;font-weight:600}.zion-native-dot{width:9px;height:9px;border-radius:50%;background:#e0a326;box-shadow:0 0 0 4px #e0a3261c}.zion-native-dot.healthy{background:#1aa36f;box-shadow:0 0 0 4px #1aa36f1c}.zion-native-dot.offline{background:#d64b4b;box-shadow:0 0 0 4px #d64b4b1c}',
     '.zion-native-list{margin:0}.zion-native-list div{display:flex;justify-content:space-between;gap:20px;padding:8px 0;border-top:1px solid #edf0f3}.zion-native-list dt{color:#77828d}.zion-native-list dd{margin:0;text-align:right;font-weight:600}',
+    '.zion-native-toggle{display:flex;align-items:flex-start;gap:10px;margin:2px 0 8px;cursor:pointer}.zion-native-toggle input{width:16px;height:16px;margin:1px 0 0;accent-color:#1677d2}.zion-native-toggle strong,.zion-native-toggle small{display:block}.zion-native-toggle strong{font-size:12px}.zion-native-toggle small{margin-top:3px;color:#77828d;font-size:11px;line-height:1.4}.zion-native-setting-state{margin:0 0 15px 26px;color:#77828d;font-size:11px}',
     '.zion-native-actions{display:flex;gap:8px;margin-top:17px}.zion-native-button{padding:8px 13px;border:1px solid #cbd2da;border-radius:5px;color:#35404c;background:#fff;font:inherit;font-size:12px;font-weight:600;cursor:pointer}.zion-native-button.primary{border-color:#1677d2;color:#fff;background:#1677d2}.zion-native-button:hover{filter:brightness(.97)}',
     '.zion-native-note{padding:12px 14px;border-left:3px solid #1677d2;background:#edf6ff;color:#53606d;font-size:12px;line-height:1.5}',
     '@media(max-width:700px){.zion-native-grid{grid-template-columns:1fr}.zion-native-body{padding:18px}}'
@@ -38,7 +39,7 @@
   }
 
   function workspaceUrl() {
-    return 'http://' + window.location.hostname + ':24871/releasestation/';
+    return window.location.origin + '/releasestation/';
   }
 
   var template = [
@@ -46,9 +47,9 @@
     '  <v-app-window width="980" height="650" ref="appWindow" :resizable="true" syno-id="SYNO.ZionReleaseStation.Window">',
     '    <div class="zion-native">',
     '      <header class="zion-native-header">',
-    '        <img class="zion-native-icon" src="images/app_64.png" alt="">',
+    '        <img class="zion-native-icon" src="/webman/3rdparty/zion-releasestation/images/app_64.png" alt="">',
     '        <div class="zion-native-title"><strong>Zion ReleaseStation</strong><span>Synology-native configuration</span></div>',
-    '        <button class="zion-native-button primary" type="button" @click="openWorkspace">Open workspace ↗</button>',
+    '        <button v-if="webAccessEnabled" class="zion-native-button primary" type="button" @click="openWorkspace">Open workspace ↗</button>',
     '      </header>',
     '      <nav class="zion-native-nav" aria-label="ReleaseStation sections">',
     '        <button type="button" :class="{active: tab === \'overview\'}" @click="tab = \'overview\'">Overview</button>',
@@ -69,7 +70,16 @@
     '        </div>',
     '        <div v-else>',
     '          <div class="zion-native-intro"><h1>Package configuration</h1><p>These values are provided by the DSM package and are intentionally bound to the local service.</p></div>',
-    '          <article class="zion-native-card"><dl class="zion-native-list"><div><dt>Service bind address</dt><dd>127.0.0.1</dd></div><div><dt>Service port</dt><dd>24871</dd></div><div><dt>DSM route</dt><dd>/releasestation/</dd></div><div><dt>Data store</dt><dd>SQLite</dd></div></dl><div class="zion-native-note">The web workspace is a fallback and advanced management surface. Use the native DSM application for package activation and configuration.</div></article>',
+    '          <article class="zion-native-card">',
+    '            <h2>Web workspace</h2>',
+    '            <label class="zion-native-toggle"><input type="checkbox" v-model="webAccessEnabled" :disabled="webAccessState === \'loading\'" @change="saveWebAccess"><span><strong>Enable /releasestation/ URL</strong><small>Expose the web fallback through the DSM HTTPS route.</small></span></label>',
+    '            <div class="zion-native-setting-state" role="status">{{ webAccessMessage }}</div>',
+    '            <div v-if="webAccessEnabled">',
+    '              <dl class="zion-native-list"><div><dt>Service bind address</dt><dd>127.0.0.1</dd></div><div><dt>Service port</dt><dd>24871</dd></div><div><dt>DSM route</dt><dd>/releasestation/</dd></div><div><dt>Data store</dt><dd>SQLite</dd></div></dl>',
+    '              <div class="zion-native-note">The web workspace is available as a fallback and advanced management surface. It remains protected by the DSM HTTPS entry point; the local service is not exposed directly.</div>',
+    '            </div>',
+    '            <div v-else class="zion-native-note">The /releasestation/ web route is disabled. Related URL and service settings are hidden.</div>',
+    '          </article>',
     '        </div>',
     '      </section>',
     '    </div>',
@@ -83,7 +93,9 @@
       return {
         tab: 'overview',
         health: {},
-        healthState: 'checking'
+        healthState: 'checking',
+        webAccessEnabled: true,
+        webAccessState: 'loading'
       };
     },
     computed: {
@@ -93,14 +105,57 @@
       },
       healthDetail: function () {
         return this.healthState === 'healthy' ? 'The local API and SQLite database are ready.' : 'Connect to the local ReleaseStation service to inspect package status.';
+      },
+      webAccessMessage: function () {
+        if (this.webAccessState === 'loading') return 'Reading current setting…';
+        if (this.webAccessState === 'saving') return 'Saving setting…';
+        if (this.webAccessState === 'saved') return 'Setting saved.';
+        if (this.webAccessState === 'error') return 'Unable to save or read the setting. Check the DSM web route.';
+        return '';
       }
     },
     mounted: function () {
       installStyles();
+      this.loadWebAccess();
       this.checkHealth();
     },
     methods: {
-      openWorkspace: function () { window.open(workspaceUrl(), '_blank'); },
+      openWorkspace: function () {
+        if (!this.webAccessEnabled) return;
+        window.open(workspaceUrl(), '_blank');
+      },
+      loadWebAccess: function () {
+        var self = this;
+        fetch('/releasestation/api/v1/settings/web-access', { headers: { Accept: 'application/json' } })
+          .then(function (response) { if (!response.ok) throw new Error('settings'); return response.json(); })
+          .then(function (payload) {
+            self.webAccessEnabled = Boolean(payload.data && payload.data.enabled);
+            self.webAccessState = 'saved';
+          })
+          .catch(function () {
+            self.webAccessEnabled = true;
+            self.webAccessState = 'error';
+          });
+      },
+      saveWebAccess: function () {
+        var self = this;
+        var requestedValue = self.webAccessEnabled;
+        self.webAccessState = 'saving';
+        fetch('/releasestation/api/v1/settings/web-access', {
+          method: 'PUT',
+          headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+          body: JSON.stringify({ enabled: requestedValue })
+        })
+          .then(function (response) { if (!response.ok) throw new Error('settings'); return response.json(); })
+          .then(function (payload) {
+            self.webAccessEnabled = Boolean(payload.data && payload.data.enabled);
+            self.webAccessState = 'saved';
+          })
+          .catch(function () {
+            self.webAccessEnabled = !requestedValue;
+            self.webAccessState = 'error';
+          });
+      },
       checkHealth: function () {
         var self = this;
         self.healthState = 'checking';
