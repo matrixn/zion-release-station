@@ -2207,13 +2207,21 @@ Set:
 dsmuidir="ui"
 ```
 
-DSM launcher should open:
+The DSM launcher and Package Center Open/Configure action should open the
+package's DSM-native configuration surface:
 
 ```text
-/releasestation/
+3rdparty/zion-releasestation/index.html
 ```
 
-Use ReleaseStation icon assets.
+The native surface must expose package health and a link to the full
+ReleaseStation workspace. The full workspace remains available separately at:
+
+```text
+http://<nas-host>:24871/releasestation/
+```
+
+Use ReleaseStation icon assets for both the DSM package and launcher entries.
 
 ---
 

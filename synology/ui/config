@@ -5,7 +5,7 @@
       "icon": "images/app_{0}.png",
       "title": "Zion ReleaseStation",
       "desc": "Git deployment and release management for Synology DSM.",
-      "url": "/releasestation/",
+      "url": "3rdparty/zion-releasestation/index.html",
       "allUsers": true
     }
   }

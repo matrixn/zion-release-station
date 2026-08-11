@@ -19,7 +19,7 @@ cp "$repo_root/build/backend/zion-releasestation" "$package_root/bin/zion-releas
 cp -R "$repo_root/build/frontend/." "$package_root/web/"
 cp "$repo_root/synology/nginx/releasestation.conf" "$package_root/nginx/"
 cp "$repo_root/synology/port_conf/zion-releasestation.sc" "$package_root/port_conf/"
-cp "$repo_root/synology/ui/config" "$package_root/ui/"
+cp -R "$repo_root/synology/ui/." "$package_root/ui/"
 cp "$repo_root/internal/database/migrations/0001_foundation.sql" "$package_root/migrations/"
 chmod 0755 "$package_root/bin/zion-releasestation"
 

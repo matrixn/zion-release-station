@@ -10,3 +10,4 @@
 /var/
 *.log
 *.local
+__pycache__/
