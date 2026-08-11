@@ -16,6 +16,7 @@ NAS_PORT="${NAS_PORT:-22}"
 NAS_PACKAGE="${NAS_PACKAGE:-zion-releasestation}"
 NAS_REMOTE_SPK="${NAS_REMOTE_SPK:-/tmp/zion-releasestation-dev.spk}"
 NAS_SUDO="${NAS_SUDO:-sudo}"
+NAS_IDENTITY_FILE="${NAS_IDENTITY_FILE:-}"
 
 if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   make -C "$repo_root" spk
@@ -25,6 +26,11 @@ artifact="${SPK_ARTIFACT:-$(find "$repo_root/dist" -maxdepth 1 -type f -name '*.
 
 ssh_opts=(-p "$NAS_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes)
 scp_opts=(-P "$NAS_PORT" -o BatchMode=yes -o StrictHostKeyChecking=yes)
+if [[ -n "$NAS_IDENTITY_FILE" ]]; then
+  [[ -r "$NAS_IDENTITY_FILE" ]] || { printf 'NAS identity file is not readable: %s\n' "$NAS_IDENTITY_FILE" >&2; exit 1; }
+  ssh_opts+=(-i "$NAS_IDENTITY_FILE" -o IdentitiesOnly=yes)
+  scp_opts+=(-i "$NAS_IDENTITY_FILE" -o IdentitiesOnly=yes)
+fi
 remote="$NAS_USER@$NAS_HOST"
 
 printf 'Checking SSH access to %s...\n' "$remote"
