@@ -4,6 +4,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "${RS_NAS_CONFIG:-$repo_root/.env.nas}"
 NAS_PORT="${NAS_PORT:-22}"
 NAS_PACKAGE="${NAS_PACKAGE:-zion-releasestation}"
+NAS_SYNOPKG="${NAS_SYNOPKG:-/usr/syno/bin/synopkg}"
 NAS_SUDO="${NAS_SUDO:-sudo}"
 NAS_SUDO_PASS="${NAS_SUDO_PASS:-}"
 NAS_IDENTITY_FILE="${NAS_IDENTITY_FILE:-}"
@@ -14,7 +15,7 @@ if [[ -n "$NAS_IDENTITY_FILE" ]]; then
 fi
 remote="$NAS_USER@$NAS_HOST"
 if [[ -n "$NAS_SUDO_PASS" ]]; then
-  printf '%s\n' "$NAS_SUDO_PASS" | ssh "${ssh_opts[@]}" "$remote" "$NAS_SUDO -S -p '' synopkg restart '$NAS_PACKAGE'"
+  printf '%s\n' "$NAS_SUDO_PASS" | ssh "${ssh_opts[@]}" "$remote" "$NAS_SUDO -S -p '' '$NAS_SYNOPKG' restart '$NAS_PACKAGE'"
 else
-  ssh -tt "${ssh_opts[@]}" "$remote" "$NAS_SUDO synopkg restart '$NAS_PACKAGE'"
+  ssh -tt "${ssh_opts[@]}" "$remote" "$NAS_SUDO '$NAS_SYNOPKG' restart '$NAS_PACKAGE'"
 fi

@@ -14,6 +14,7 @@ source "$config_file"
 : "${NAS_USER:?NAS_USER is required}"
 NAS_PORT="${NAS_PORT:-22}"
 NAS_PACKAGE="${NAS_PACKAGE:-zion-releasestation}"
+NAS_SYNOPKG="${NAS_SYNOPKG:-/usr/syno/bin/synopkg}"
 NAS_REMOTE_SPK="${NAS_REMOTE_SPK:-/tmp/zion-releasestation-dev.spk}"
 NAS_SUDO="${NAS_SUDO:-sudo}"
 NAS_SUDO_PASS="${NAS_SUDO_PASS:-}"
@@ -51,10 +52,10 @@ printf 'Uploading %s...\n' "$artifact"
 scp "${scp_opts[@]}" "$artifact" "$remote:$NAS_REMOTE_SPK"
 
 printf 'Installing %s on Synology...\n' "$NAS_PACKAGE"
-if ! run_remote_sudo "synopkg install '$NAS_REMOTE_SPK'"; then
+if ! run_remote_sudo "'$NAS_SYNOPKG' install '$NAS_REMOTE_SPK'"; then
   ssh "${ssh_opts[@]}" "$remote" "tail -n 120 /var/log/packages/$NAS_PACKAGE.log 2>/dev/null || true; tail -n 120 /var/log/synopkg.log 2>/dev/null || true" || true
   exit 1
 fi
-run_remote_sudo "synopkg start '$NAS_PACKAGE' >/dev/null 2>&1 || true"
+run_remote_sudo "'$NAS_SYNOPKG' start '$NAS_PACKAGE' >/dev/null 2>&1 || true"
 "$repo_root/scripts/nas-health.sh"
 printf 'Deployment completed successfully.\n'
