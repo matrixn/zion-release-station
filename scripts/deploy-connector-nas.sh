@@ -104,7 +104,7 @@ target="$2"
 mkdir -p "$target/var" "$target/key"
 # Do not preserve source owner/mode metadata on the Synology volume.
 cp -R "$stage"/. "$target"/
-# PHP-FPM runs as Synology's http user. Keep secrets out of the world while
+# PHP-FPM runs as the Synology http user. Keep secrets out of the world while
 # allowing the selected Web Station profile to read them.
 chown root:http "$target/.env" "$target/key/github-private-key.pem"
 chmod 640 "$target/.env" "$target/key/github-private-key.pem"
