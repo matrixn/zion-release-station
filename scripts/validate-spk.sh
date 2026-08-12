@@ -27,6 +27,10 @@ tar -tzf "$tmp_dir/package.tgz" | grep -Fx './bin/zion-releasestation' >/dev/nul
   printf 'package.tgz is missing the runtime binary.\n' >&2
   exit 1
 }
+tar -tzf "$tmp_dir/package.tgz" | grep -Fx './VERSION' >/dev/null || {
+  printf 'SPK package is missing VERSION.\n' >&2
+  exit 1
+}
 tar -tzf "$tmp_dir/package.tgz" | grep -Fx './web/index.html' >/dev/null || {
   printf 'package.tgz is missing the frontend entry point.\n' >&2
   exit 1

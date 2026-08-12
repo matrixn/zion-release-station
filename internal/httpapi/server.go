@@ -41,6 +41,7 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 		github:      githubapp.NewClient(cfg),
 		githubStore: githubapp.NewStore(db),
 	}
+	server.loadGitHubAppSettings()
 	if _, err := db.Exec(`INSERT OR IGNORE INTO settings(key, value_json, updated_at) VALUES (?, 'true', datetime('now'))`, webAccessSettingKey); err != nil {
 		logger.Error("initialize web access setting", "error", err)
 	}
@@ -69,6 +70,8 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 
 func (s *Server) registerIntegrationRoutes(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc(prefix+"/integrations/github", s.handleGitHubConnection)
+	mux.HandleFunc(prefix+"/integrations/github/config", s.handleGitHubConfig)
+	mux.HandleFunc(prefix+"/integrations/github/private-key", s.handleGitHubPrivateKey)
 	mux.HandleFunc(prefix+"/integrations/github/install", s.handleGitHubInstall)
 	mux.HandleFunc(prefix+"/integrations/github/setup", s.handleGitHubSetup)
 	mux.HandleFunc(prefix+"/integrations/github/repositories", s.handleGitHubRepositories)

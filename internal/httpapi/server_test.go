@@ -162,6 +162,38 @@ func TestGitHubConnectionSettingsAPI(t *testing.T) {
 	}
 }
 
+func TestGitHubAppConfigurationIsManagedByAPI(t *testing.T) {
+	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(config.Config{WebRoot: t.TempDir(), Version: "0.1.0-test"}, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/releasestation/api/v1/integrations/github/config", strings.NewReader(`{"app_id":"123","app_slug":"zion-releasestation","setup_url":"https://example.test/releasestation/api/v1/integrations/github/setup"}`))
+	request.Header.Set("Content-Type", "application/json")
+	server.http.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"app_slug":"zion-releasestation"`) {
+		t.Fatalf("unexpected GitHub config response: %d %q", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/releasestation/api/v1/integrations/github", nil)
+	server.http.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"app_id":"123"`) || !strings.Contains(recorder.Body.String(), `"private_key_configured":false`) {
+		t.Fatalf("GitHub config was not persisted: %d %q", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/releasestation/api/v1/integrations/github/private-key", strings.NewReader("not-a-pem"))
+	request.Header.Set("Content-Type", "multipart/form-data")
+	server.http.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid private key upload to fail, got %d %q", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestManualSiteAPIAutoDetectsFrameworkAndSavesRepository(t *testing.T) {
 	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
 	if err != nil {

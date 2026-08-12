@@ -1,13 +1,56 @@
 package httpapi
 
 import (
+	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"encoding/json"
+	"io"
 	"net/http"
+	"net/url"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/matrixn/zion-release-station/internal/config"
+	"github.com/matrixn/zion-release-station/internal/githubapp"
 )
+
+const githubAppConfigSettingKey = "github_app_config"
+
+type githubAppConfig struct {
+	AppID          string `json:"app_id"`
+	AppSlug        string `json:"app_slug"`
+	SetupURL       string `json:"setup_url"`
+	PrivateKeyPath string `json:"private_key_path,omitempty"`
+}
+
+func (s *Server) loadGitHubAppSettings() {
+	var encoded string
+	if err := s.db.QueryRow(`SELECT value_json FROM settings WHERE key = ?`, githubAppConfigSettingKey).Scan(&encoded); err != nil {
+		return
+	}
+	var saved githubAppConfig
+	if json.Unmarshal([]byte(encoded), &saved) != nil {
+		return
+	}
+	cfg := s.github.Config()
+	if saved.AppID != "" {
+		cfg.GitHubAppID = saved.AppID
+	}
+	if saved.AppSlug != "" {
+		cfg.GitHubAppSlug = saved.AppSlug
+	}
+	if saved.SetupURL != "" {
+		cfg.GitHubSetupURL = saved.SetupURL
+	}
+	if saved.PrivateKeyPath != "" {
+		cfg.GitHubPrivateKeyPath = saved.PrivateKeyPath
+	}
+	s.github.UpdateConfig(cfg)
+}
 
 func (s *Server) handleGitHubConnection(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -19,14 +62,137 @@ func (s *Server) handleGitHubConnection(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusInternalServerError, "SETTINGS_UNAVAILABLE", "Unable to read GitHub App installations.")
 		return
 	}
+	cfg := s.github.Config()
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
-		"configured":          s.github.Configured(),
-		"configuration_error": s.github.ConfigurationError(),
-		"connected":           s.github.Configured() && len(installations) > 0,
-		"app_slug":            s.config.GitHubAppSlug,
-		"setup_url":           s.github.SetupURL(),
-		"installations":       installations,
+		"configured":             s.github.Configured(),
+		"configuration_error":    s.github.ConfigurationError(),
+		"connected":              s.github.Configured() && len(installations) > 0,
+		"app_id":                 cfg.GitHubAppID,
+		"app_slug":               cfg.GitHubAppSlug,
+		"setup_url":              s.github.SetupURL(),
+		"private_key_configured": cfg.GitHubPrivateKeyPath != "" && readablePath(cfg.GitHubPrivateKeyPath),
+		"installations":          installations,
 	}})
+}
+
+func (s *Server) handleGitHubConfig(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only PUT is supported.")
+		return
+	}
+	var payload struct {
+		AppID    string `json:"app_id"`
+		AppSlug  string `json:"app_slug"`
+		SetupURL string `json:"setup_url"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_GITHUB_CONFIG", err.Error())
+		return
+	}
+	payload.AppID = strings.TrimSpace(payload.AppID)
+	payload.AppSlug = strings.TrimSpace(payload.AppSlug)
+	payload.SetupURL = strings.TrimSpace(payload.SetupURL)
+	if payload.AppID == "" || payload.AppSlug == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_GITHUB_CONFIG", "App ID and App slug are required.")
+		return
+	}
+	parsed, err := url.Parse(payload.SetupURL)
+	if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_GITHUB_CONFIG", "Setup URL must be a public HTTPS URL.")
+		return
+	}
+	cfg := s.github.Config()
+	cfg.GitHubAppID = payload.AppID
+	cfg.GitHubAppSlug = payload.AppSlug
+	cfg.GitHubSetupURL = payload.SetupURL
+	if err := s.saveGitHubAppConfig(r.Context(), cfg); err != nil {
+		writeError(w, http.StatusInternalServerError, "SETTINGS_UNAVAILABLE", "Unable to save GitHub App settings.")
+		return
+	}
+	s.github.UpdateConfig(cfg)
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"app_id": cfg.GitHubAppID, "app_slug": cfg.GitHubAppSlug, "setup_url": cfg.GitHubSetupURL, "private_key_configured": readablePath(cfg.GitHubPrivateKeyPath)}})
+}
+
+func (s *Server) handleGitHubPrivateKey(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only POST is supported.")
+		return
+	}
+	if err := r.ParseMultipartForm(2 << 20); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_PRIVATE_KEY", "The private key upload is too large or invalid.")
+		return
+	}
+	file, _, err := r.FormFile("private_key")
+	if err != nil {
+		file, _, err = r.FormFile("file")
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_PRIVATE_KEY", "Upload a GitHub App PEM private key.")
+		return
+	}
+	defer file.Close()
+	data, err := io.ReadAll(io.LimitReader(file, 2<<20))
+	if err != nil || len(data) == 0 {
+		writeError(w, http.StatusBadRequest, "INVALID_PRIVATE_KEY", "The private key could not be read.")
+		return
+	}
+	if err := githubapp.ValidatePrivateKey(data); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_PRIVATE_KEY", "The uploaded file is not a valid RSA GitHub App private key.")
+		return
+	}
+	secretDir := filepath.Join(s.config.DataDir, "secrets")
+	if err := os.MkdirAll(secretDir, 0o700); err != nil {
+		writeError(w, http.StatusInternalServerError, "SECRET_UNAVAILABLE", "Unable to prepare the private secrets directory.")
+		return
+	}
+	keyPath := filepath.Join(secretDir, "github-app.pem")
+	temporary, err := os.CreateTemp(secretDir, ".github-app-*.pem")
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "SECRET_UNAVAILABLE", "Unable to store the private key.")
+		return
+	}
+	temporaryName := temporary.Name()
+	defer os.Remove(temporaryName)
+	if err := temporary.Chmod(0o600); err != nil {
+		temporary.Close()
+		writeError(w, http.StatusInternalServerError, "SECRET_UNAVAILABLE", "Unable to protect the private key.")
+		return
+	}
+	if _, err := temporary.Write(data); err != nil {
+		temporary.Close()
+		writeError(w, http.StatusInternalServerError, "SECRET_UNAVAILABLE", "Unable to store the private key.")
+		return
+	}
+	if err := temporary.Close(); err != nil {
+		writeError(w, http.StatusInternalServerError, "SECRET_UNAVAILABLE", "Unable to store the private key.")
+		return
+	}
+	if err := os.Rename(temporaryName, keyPath); err != nil {
+		writeError(w, http.StatusInternalServerError, "SECRET_UNAVAILABLE", "Unable to activate the private key.")
+		return
+	}
+	cfg := s.github.Config()
+	cfg.GitHubPrivateKeyPath = keyPath
+	if err := s.saveGitHubAppConfig(r.Context(), cfg); err != nil {
+		writeError(w, http.StatusInternalServerError, "SETTINGS_UNAVAILABLE", "Unable to save the private key setting.")
+		return
+	}
+	s.github.UpdateConfig(cfg)
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"private_key_configured": true}})
+}
+
+func (s *Server) saveGitHubAppConfig(ctx context.Context, cfg config.Config) error {
+	encoded, err := json.Marshal(githubAppConfig{AppID: cfg.GitHubAppID, AppSlug: cfg.GitHubAppSlug, SetupURL: cfg.GitHubSetupURL, PrivateKeyPath: cfg.GitHubPrivateKeyPath})
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO settings(key, value_json, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`, githubAppConfigSettingKey, encoded)
+	return err
+}
+
+func readablePath(file string) bool {
+	info, err := os.Stat(file)
+	return err == nil && !info.IsDir()
 }
 
 func (s *Server) handleGitHubInstall(w http.ResponseWriter, r *http.Request) {

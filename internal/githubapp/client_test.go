@@ -13,7 +13,7 @@ import (
 )
 
 func TestClientRequiresReadableGitHubAppConfiguration(t *testing.T) {
-	client := NewClient(config.Config{GitHubAppID: "123", GitHubAppSlug: "zion", GitHubPrivateKeyPath: filepath.Join(t.TempDir(), "missing.pem")})
+	client := NewClient(config.Config{GitHubAppID: "123", GitHubAppSlug: "zion", GitHubSetupURL: "https://example.test/setup", GitHubPrivateKeyPath: filepath.Join(t.TempDir(), "missing.pem")})
 	if client.Configured() {
 		t.Fatal("expected missing private key to leave the App unconfigured")
 	}
@@ -32,7 +32,7 @@ func TestClientParsesPKCS1AndGeneratesAppJWT(t *testing.T) {
 	if err := os.WriteFile(keyPath, data, 0o600); err != nil {
 		t.Fatalf("write key: %v", err)
 	}
-	client := NewClient(config.Config{GitHubAppID: "123", GitHubAppSlug: "zion", GitHubPrivateKeyPath: keyPath})
+	client := NewClient(config.Config{GitHubAppID: "123", GitHubAppSlug: "zion", GitHubSetupURL: "https://example.test/setup", GitHubPrivateKeyPath: keyPath})
 	if !client.Configured() {
 		t.Fatalf("expected configured client, error=%q", client.ConfigurationError())
 	}

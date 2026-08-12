@@ -27,10 +27,11 @@ const apiBaseURL = "https://api.github.com"
 const apiVersion = "2022-11-28"
 
 type Client struct {
-	config config.Config
-	http   *http.Client
-	mu     sync.Mutex
-	tokens map[int64]cachedToken
+	config   config.Config
+	http     *http.Client
+	mu       sync.Mutex
+	configMu sync.RWMutex
+	tokens   map[int64]cachedToken
 }
 
 type cachedToken struct {
@@ -61,19 +62,35 @@ func NewClient(cfg config.Config) *Client {
 	return &Client{config: cfg, http: &http.Client{Timeout: 20 * time.Second}, tokens: make(map[int64]cachedToken)}
 }
 
+func (c *Client) Config() config.Config {
+	c.configMu.RLock()
+	defer c.configMu.RUnlock()
+	return c.config
+}
+
+func (c *Client) UpdateConfig(cfg config.Config) {
+	c.configMu.Lock()
+	c.config = cfg
+	c.configMu.Unlock()
+}
+
 func (c *Client) Configured() bool {
-	return c.config.GitHubAppID != "" && c.config.GitHubAppSlug != "" && c.config.GitHubPrivateKeyPath != "" && readableFile(c.config.GitHubPrivateKeyPath)
+	cfg := c.Config()
+	return cfg.GitHubAppID != "" && cfg.GitHubAppSlug != "" && cfg.GitHubSetupURL != "" && cfg.GitHubPrivateKeyPath != "" && readableFile(cfg.GitHubPrivateKeyPath)
 }
 
 func (c *Client) ConfigurationError() string {
+	cfg := c.Config()
 	switch {
-	case c.config.GitHubAppID == "":
+	case cfg.GitHubAppID == "":
 		return "RS_GITHUB_APP_ID is not configured"
-	case c.config.GitHubAppSlug == "":
+	case cfg.GitHubAppSlug == "":
 		return "RS_GITHUB_APP_SLUG is not configured"
-	case c.config.GitHubPrivateKeyPath == "":
+	case cfg.GitHubPrivateKeyPath == "":
 		return "RS_GITHUB_APP_PRIVATE_KEY_PATH is not configured"
-	case !readableFile(c.config.GitHubPrivateKeyPath):
+	case cfg.GitHubSetupURL == "":
+		return "RS_GITHUB_SETUP_URL is not configured"
+	case !readableFile(cfg.GitHubPrivateKeyPath):
 		return "GitHub App private key is not readable"
 	default:
 		return ""
@@ -81,14 +98,15 @@ func (c *Client) ConfigurationError() string {
 }
 
 func (c *Client) InstallationURL(state string) (string, error) {
+	cfg := c.Config()
 	if !c.Configured() {
 		return "", fmt.Errorf("GitHub App is not configured: %s", c.ConfigurationError())
 	}
-	return "https://github.com/apps/" + url.PathEscape(c.config.GitHubAppSlug) + "/installations/new?state=" + url.QueryEscape(state), nil
+	return "https://github.com/apps/" + url.PathEscape(cfg.GitHubAppSlug) + "/installations/new?state=" + url.QueryEscape(state), nil
 }
 
 func (c *Client) SetupURL() string {
-	return c.config.GitHubSetupURL
+	return c.Config().GitHubSetupURL
 }
 
 func (c *Client) Installation(ctx context.Context, id int64) (Installation, error) {
@@ -218,10 +236,11 @@ func (c *Client) do(ctx context.Context, method, endpoint string, body io.Reader
 }
 
 func (c *Client) appJWT() (string, error) {
+	cfg := c.Config()
 	if !c.Configured() {
 		return "", fmt.Errorf("GitHub App is not configured: %s", c.ConfigurationError())
 	}
-	keyBytes, err := os.ReadFile(c.config.GitHubPrivateKeyPath)
+	keyBytes, err := os.ReadFile(cfg.GitHubPrivateKeyPath)
 	if err != nil {
 		return "", fmt.Errorf("read GitHub App private key: %w", err)
 	}
@@ -231,7 +250,7 @@ func (c *Client) appJWT() (string, error) {
 	}
 	now := time.Now().Unix()
 	header := base64.RawURLEncoding.EncodeToString([]byte(`{"alg":"RS256","typ":"JWT"}`))
-	payloadJSON, _ := json.Marshal(map[string]any{"iat": now - 60, "exp": now + 540, "iss": c.config.GitHubAppID})
+	payloadJSON, _ := json.Marshal(map[string]any{"iat": now - 60, "exp": now + 540, "iss": cfg.GitHubAppID})
 	payload := base64.RawURLEncoding.EncodeToString(payloadJSON)
 	unsigned := header + "." + payload
 	digest := sha256.Sum256([]byte(unsigned))
@@ -240,6 +259,11 @@ func (c *Client) appJWT() (string, error) {
 		return "", fmt.Errorf("sign GitHub App JWT: %w", err)
 	}
 	return unsigned + "." + base64.RawURLEncoding.EncodeToString(signature), nil
+}
+
+func ValidatePrivateKey(data []byte) error {
+	_, err := parsePrivateKey(data)
+	return err
 }
 
 func parsePrivateKey(data []byte) (*rsa.PrivateKey, error) {

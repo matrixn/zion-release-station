@@ -7,12 +7,17 @@ PID_FILE="$PKG_VAR/runtime/releasestation.pid"
 LOG_FILE="$PKG_VAR/logs/releasestation.log"
 BIN="$PKG_DEST/bin/zion-releasestation"
 CONFIG_ENV="$PKG_VAR/config.env"
+VERSION_FILE="$PKG_DEST/VERSION"
 
 if [ -r "$CONFIG_ENV" ]; then
     set -a
     # shellcheck disable=SC1090
     . "$CONFIG_ENV"
     set +a
+fi
+
+if [ -z "${RS_VERSION:-}" ] && [ -r "$VERSION_FILE" ]; then
+    RS_VERSION=$(tr -d '\r\n' < "$VERSION_FILE")
 fi
 
 is_running() {
@@ -34,7 +39,7 @@ start_service() {
         exit 0
     fi
     install -d -m 700 "$PKG_VAR/runtime" "$PKG_VAR/logs"
-    RS_DATA_DIR="$PKG_VAR" RS_WEB_ROOT="$PKG_DEST/web" RS_VERSION="0.1.0" \
+    RS_DATA_DIR="$PKG_VAR" RS_WEB_ROOT="$PKG_DEST/web" RS_VERSION="${RS_VERSION:-0.1.0}" \
         "$BIN" >>"$LOG_FILE" 2>&1 &
     echo $! >"$PID_FILE"
     i=0
