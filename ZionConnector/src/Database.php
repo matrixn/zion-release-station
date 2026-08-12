@@ -10,23 +10,39 @@ use RuntimeException;
 final class Database
 {
     private PDO $pdo;
+    private bool $mysql;
 
-    public function __construct(string $path)
+    public function __construct(string $dsn, ?string $username = null, ?string $password = null)
     {
-        $directory = dirname($path);
-        if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) {
-            throw new RuntimeException('Unable to create connector data directory.');
+        if (!str_contains($dsn, ':')) {
+            $dsn = 'sqlite:' . $dsn;
         }
-        $this->pdo = new PDO('sqlite:' . $path, null, null, [
+        $this->mysql = str_starts_with($dsn, 'mysql:');
+        if (str_starts_with($dsn, 'sqlite:')) {
+            $path = substr($dsn, strlen('sqlite:'));
+            $directory = dirname($path);
+            if (!is_dir($directory) && !mkdir($directory, 0700, true) && !is_dir($directory)) {
+                throw new RuntimeException('Unable to create connector data directory.');
+            }
+        }
+        $this->pdo = new PDO($dsn, $username, $password, [
             PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
             PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
         ]);
-        $this->pdo->exec('PRAGMA foreign_keys = ON');
-        $this->pdo->exec('PRAGMA busy_timeout = 5000');
+        if (str_starts_with($dsn, 'sqlite:')) {
+            $this->pdo->exec('PRAGMA foreign_keys = ON');
+            $this->pdo->exec('PRAGMA busy_timeout = 5000');
+        } else {
+            $this->pdo->exec("SET NAMES utf8mb4 COLLATE utf8mb4_unicode_ci");
+        }
     }
 
     public function migrate(): void
     {
+        if ($this->mysql) {
+            $this->migrateMariaDb();
+            return;
+        }
         $this->pdo->exec(<<<'SQL'
             CREATE TABLE IF NOT EXISTS connector_instances (
                 id TEXT PRIMARY KEY,
@@ -65,6 +81,51 @@ final class Database
                 updated_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_installations_instance ON github_installations(instance_id);
+        SQL);
+    }
+
+    private function migrateMariaDb(): void
+    {
+        $this->pdo->exec(<<<'SQL'
+            CREATE TABLE IF NOT EXISTS connector_instances (
+                id VARCHAR(128) PRIMARY KEY,
+                license_id VARCHAR(255) NULL,
+                credential_hash CHAR(64) NOT NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'active',
+                return_host VARCHAR(255) NOT NULL,
+                created_at VARCHAR(32) NOT NULL,
+                updated_at VARCHAR(32) NOT NULL,
+                last_seen_at VARCHAR(32) NULL
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            CREATE TABLE IF NOT EXISTS github_connect_sessions (
+                id VARCHAR(128) PRIMARY KEY,
+                instance_id VARCHAR(128) NOT NULL,
+                state_hash CHAR(64) UNIQUE NOT NULL,
+                return_url VARCHAR(2048) NOT NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                expires_at VARCHAR(32) NOT NULL,
+                github_installation_id BIGINT NULL,
+                error_code VARCHAR(64) NULL,
+                created_at VARCHAR(32) NOT NULL,
+                consumed_at VARCHAR(32) NULL,
+                CONSTRAINT fk_sessions_instance FOREIGN KEY (instance_id) REFERENCES connector_instances(id) ON DELETE CASCADE,
+                INDEX idx_sessions_instance_status (instance_id, status),
+                INDEX idx_sessions_expires_at (expires_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            CREATE TABLE IF NOT EXISTS github_installations (
+                id VARCHAR(128) PRIMARY KEY,
+                instance_id VARCHAR(128) NOT NULL,
+                github_installation_id BIGINT NOT NULL UNIQUE,
+                account_login VARCHAR(255) NOT NULL,
+                account_type VARCHAR(32) NOT NULL,
+                repository_selection VARCHAR(32) NOT NULL,
+                permissions_json LONGTEXT NOT NULL,
+                suspended_at VARCHAR(32) NULL,
+                created_at VARCHAR(32) NOT NULL,
+                updated_at VARCHAR(32) NOT NULL,
+                CONSTRAINT fk_installations_instance FOREIGN KEY (instance_id) REFERENCES connector_instances(id) ON DELETE CASCADE,
+                INDEX idx_installations_instance (instance_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         SQL);
     }
 
@@ -122,12 +183,13 @@ final class Database
     /** @return array<string,mixed>|null */
     public function consumeSession(string $stateHash): ?array
     {
-        $this->pdo->exec('BEGIN IMMEDIATE TRANSACTION');
+        $this->pdo->beginTransaction();
         try {
-            $statement = $this->pdo->prepare(<<<'SQL'
+            $forUpdate = $this->mysql ? ' FOR UPDATE' : '';
+            $statement = $this->pdo->prepare(<<<SQL
                 SELECT * FROM github_connect_sessions
                 WHERE state_hash = :state_hash AND status = 'pending' AND expires_at > :now
-                LIMIT 1
+                LIMIT 1{$forUpdate}
             SQL);
             $statement->execute(['state_hash' => $stateHash, 'now' => gmdate('c')]);
             $session = $statement->fetch();
@@ -148,7 +210,19 @@ final class Database
     /** @param array<string,mixed> $installation */
     public function saveInstallation(array $installation): void
     {
-        $statement = $this->pdo->prepare(<<<'SQL'
+        $sql = $this->mysql ? <<<'SQL'
+            INSERT INTO github_installations
+                (id, instance_id, github_installation_id, account_login, account_type, repository_selection, permissions_json, created_at, updated_at)
+            VALUES (:id, :instance_id, :github_installation_id, :account_login, :account_type, :repository_selection, :permissions_json, :created_at, :updated_at)
+            ON DUPLICATE KEY UPDATE
+                instance_id = VALUES(instance_id),
+                account_login = VALUES(account_login),
+                account_type = VALUES(account_type),
+                repository_selection = VALUES(repository_selection),
+                permissions_json = VALUES(permissions_json),
+                suspended_at = NULL,
+                updated_at = VALUES(updated_at)
+        SQL : <<<'SQL'
             INSERT INTO github_installations
                 (id, instance_id, github_installation_id, account_login, account_type, repository_selection, permissions_json, created_at, updated_at)
             VALUES (:id, :instance_id, :github_installation_id, :account_login, :account_type, :repository_selection, :permissions_json, :created_at, :updated_at)
@@ -160,7 +234,8 @@ final class Database
                 permissions_json = excluded.permissions_json,
                 suspended_at = NULL,
                 updated_at = excluded.updated_at
-        SQL);
+        SQL;
+        $statement = $this->pdo->prepare($sql);
         $now = gmdate('c');
         $statement->execute([
             'id' => $installation['id'],

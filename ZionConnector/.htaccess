@@ -1,0 +1,7 @@
+RewriteEngine On
+
+# Apache/Web Station fallback: keep the document root at ZionConnector/ and
+# send every application request through the public front controller.
+RewriteRule ^(?:\.env|key(?:/|$)|var(?:/|$)|vendor(?:/|$)|composer\.(?:json|lock)|phpunit\.xml) - [F,L]
+RewriteCond %{REQUEST_URI} !^/public/index\.php$
+RewriteRule ^ public/index.php [QSA,L]

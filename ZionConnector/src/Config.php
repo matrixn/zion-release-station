@@ -13,8 +13,14 @@ final readonly class Config
         public string $environment,
         public bool $debug,
         public string $publicBaseUrl,
-        public string $databasePath,
         public string $adminToken,
+        public string $databaseDriver,
+        public string $databaseHost,
+        public int $databasePort,
+        public string $databaseName,
+        public string $databaseUser,
+        public string $databasePassword,
+        public string $databasePath,
         public string $githubAppId,
         public string $githubAppSlug,
         public string $githubClientId,
@@ -38,13 +44,19 @@ final readonly class Config
             environment: getenv('APP_ENV') ?: 'production',
             debug: filter_var(getenv('APP_DEBUG') ?: false, FILTER_VALIDATE_BOOL),
             publicBaseUrl: $publicBaseUrl,
-            databasePath: getenv('CONNECTOR_DATABASE_PATH') ?: dirname(__DIR__) . '/var/connector.sqlite',
             adminToken: $adminToken,
+            databaseDriver: strtolower(trim(getenv('CONNECTOR_DB_DRIVER') ?: 'mysql')),
+            databaseHost: trim(getenv('CONNECTOR_DB_HOST') ?: '127.0.0.1'),
+            databasePort: max(1, (int) (getenv('CONNECTOR_DB_PORT') ?: 3306)),
+            databaseName: trim(getenv('CONNECTOR_DB_NAME') ?: 'zion_connector'),
+            databaseUser: trim(getenv('CONNECTOR_DB_USER') ?: 'zion_connector'),
+            databasePassword: (string) getenv('CONNECTOR_DB_PASSWORD'),
+            databasePath: getenv('CONNECTOR_DATABASE_PATH') ?: dirname(__DIR__) . '/var/connector.sqlite',
             githubAppId: trim((string) getenv('CONNECTOR_GITHUB_APP_ID')),
             githubAppSlug: trim((string) getenv('CONNECTOR_GITHUB_APP_SLUG')),
             githubClientId: trim((string) getenv('CONNECTOR_GITHUB_CLIENT_ID')),
             githubClientSecret: trim((string) getenv('CONNECTOR_GITHUB_CLIENT_SECRET')),
-            githubPrivateKeyPath: trim((string) getenv('CONNECTOR_GITHUB_PRIVATE_KEY_PATH')),
+            githubPrivateKeyPath: trim((string) (getenv('CONNECTOR_GITHUB_PRIVATE_KEY_PATH') ?: dirname(__DIR__) . '/key/github-private-key.pem')),
             returnHosts: self::csv(getenv('CONNECTOR_RETURN_HOSTS') ?: ''),
         );
     }
@@ -52,6 +64,22 @@ final readonly class Config
     public function callbackUrl(): string
     {
         return $this->publicBaseUrl . '/github/callback';
+    }
+
+    public function databaseDsn(): string
+    {
+        if ($this->databaseDriver === 'sqlite') {
+            return 'sqlite:' . $this->databasePath;
+        }
+        if (!in_array($this->databaseDriver, ['mysql', 'mariadb'], true) || $this->databaseName === '') {
+            throw new RuntimeException('CONNECTOR_DB_DRIVER must be mysql, mariadb or sqlite, with a database name.');
+        }
+        return sprintf(
+            'mysql:host=%s;port=%d;dbname=%s;charset=utf8mb4',
+            $this->databaseHost,
+            $this->databasePort,
+            $this->databaseName,
+        );
     }
 
     public function githubConfigured(): bool

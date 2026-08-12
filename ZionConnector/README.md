@@ -4,8 +4,9 @@ Zion Connector este serviciul PHP public care păstrează cheia privată a GitHu
 
 ## Cerințe și instalare
 
-- PHP 8.2+ cu `curl`, `openssl`, `pdo_sqlite`;
+- PHP 8.2+ cu `curl`, `openssl`, `pdo_mysql`;
 - Composer 2;
+- MariaDB 10.5+ sau MySQL 8;
 - HTTPS reverse proxy în fața procesului PHP;
 - o GitHub App publică, cu `Contents: Read-only` și `Metadata: Read-only`;
 - cheia PEM montată ca secret, cu permisiuni `0600`.
@@ -17,7 +18,9 @@ composer install
 php -S 127.0.0.1:8787 -t public public/index.php
 ```
 
-În producție, rulează `public/index.php` prin PHP-FPM/Nginx sau Apache și expune numai reverse proxy-ul HTTPS.
+În producție, rulează `public/index.php` prin PHP-FPM/Nginx sau Apache și expune numai reverse proxy-ul HTTPS. Setează `CONNECTOR_DB_DRIVER=mysql` și variabilele `CONNECTOR_DB_*`; schema este creată automat în MariaDB cu InnoDB și utf8mb4.
+
+`.htaccess` din root este fallback pentru Apache/Web Station. Nginx nu citește `.htaccess`; folosește configurația din `deploy/nginx/connector.raduta.synology.me.conf` și setează document root-ul la `/volume1/www/connector.raduta.synology.me`.
 
 ## Provisionarea NAS-ului
 
@@ -71,4 +74,15 @@ composer lint
 composer test
 ```
 
-SQLite este suficient pentru development. Pentru producție multi-client, mută store-ul într-un serviciu PostgreSQL fără să schimbi contractul HTTP.
+SQLite rămâne disponibil numai pentru teste locale. Producția folosește MariaDB prin PDO MySQL.
+
+## Deploy pe Synology
+
+Din rădăcina repository-ului:
+
+```bash
+chmod +x scripts/deploy-connector-nas.sh
+./scripts/deploy-connector-nas.sh
+```
+
+Scriptul arhivează și trimite exclusiv conținutul `./ZionConnector`, inclusiv `.env` și `key/github-private-key.pem`, către `/volume1/www/connector.raduta.synology.me/`. Nu trimite restul repository-ului, ZIP-uri, baza de date persistentă sau cache-uri.

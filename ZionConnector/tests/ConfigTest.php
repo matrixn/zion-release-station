@@ -30,4 +30,16 @@ final class ConfigTest extends TestCase
         self::assertFalse($config->isAllowedReturnUrl('http://nas.example.com/releasestation/', 'nas.example.com'));
         self::assertFalse($config->isAllowedReturnUrl('https://attacker.example/releasestation/', 'nas.example.com'));
     }
+
+    public function testMariaDbDsnUsesConfiguredConnectionValues(): void
+    {
+        putenv('CONNECTOR_DB_DRIVER=mysql');
+        putenv('CONNECTOR_DB_HOST=mariadb.internal');
+        putenv('CONNECTOR_DB_PORT=3307');
+        putenv('CONNECTOR_DB_NAME=connector');
+
+        $config = Config::fromEnvironment();
+
+        self::assertSame('mysql:host=mariadb.internal;port=3307;dbname=connector;charset=utf8mb4', $config->databaseDsn());
+    }
 }
