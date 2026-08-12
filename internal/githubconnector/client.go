@@ -204,6 +204,47 @@ func (c *Client) Branches(ctx context.Context, installationID int64, fullName st
 	return response.Branches, nil
 }
 
+func (c *Client) DownloadArchive(ctx context.Context, installationID int64, fullName, ref string, target io.Writer) error {
+	parts := strings.Split(strings.Trim(fullName, "/"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.TrimSpace(ref) == "" {
+		return fmt.Errorf("invalid GitHub archive request")
+	}
+	query := url.Values{}
+	query.Set("installation_id", fmt.Sprintf("%d", installationID))
+	query.Set("ref", strings.TrimSpace(ref))
+	endpoint := c.path("github/repositories/"+url.PathEscape(parts[0])+"/"+url.PathEscape(parts[1])+"/archive") + "?" + query.Encode()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return err
+	}
+	request.Header.Set("Accept", "application/gzip")
+	c.mu.RLock()
+	token := c.token
+	c.mu.RUnlock()
+	request.Header.Set("Authorization", "Bearer "+token)
+	response, err := c.http.Do(request)
+	if err != nil {
+		return fmt.Errorf("download GitHub archive: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		message, _ := io.ReadAll(io.LimitReader(response.Body, 4096))
+		return fmt.Errorf("connector returned HTTP %d: %s", response.StatusCode, strings.TrimSpace(string(message)))
+	}
+	const maxArchiveSize = 512 * 1024 * 1024
+	if response.ContentLength > maxArchiveSize {
+		return fmt.Errorf("GitHub archive exceeds the 512 MB safety limit")
+	}
+	written, err := io.Copy(target, io.LimitReader(response.Body, maxArchiveSize+1))
+	if err != nil {
+		return fmt.Errorf("save GitHub archive: %w", err)
+	}
+	if written > maxArchiveSize {
+		return fmt.Errorf("GitHub archive exceeds the 512 MB safety limit")
+	}
+	return nil
+}
+
 func (c *Client) path(suffix string) string {
 	return c.baseURLValue() + "/v1/instances/" + url.PathEscape(c.instanceIDValue()) + "/" + strings.TrimLeft(suffix, "/")
 }

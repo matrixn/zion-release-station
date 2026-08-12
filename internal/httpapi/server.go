@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/matrixn/zion-release-station/internal/config"
+	"github.com/matrixn/zion-release-station/internal/deploy"
 	"github.com/matrixn/zion-release-station/internal/detection"
 	"github.com/matrixn/zion-release-station/internal/githubconnector"
 	"github.com/matrixn/zion-release-station/internal/sites"
@@ -26,6 +27,7 @@ type Server struct {
 	sites         *sites.Store
 	webStation    webstation.WebStationAdapter
 	githubManaged *githubconnector.Client
+	deployer      *deploy.Runner
 }
 
 const webAccessSettingKey = "web_access_enabled"
@@ -39,6 +41,7 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 		webStation:    webstation.NewFilesystemAdapter(cfg.WebStationRoots, detection.Registry{}),
 		githubManaged: githubconnector.NewClient(cfg),
 	}
+	server.deployer = deploy.NewRunner(db, server.githubManaged)
 	if _, err := db.Exec(`INSERT OR IGNORE INTO settings(key, value_json, updated_at) VALUES (?, 'true', datetime('now'))`, webAccessSettingKey); err != nil {
 		logger.Error("initialize web access setting", "error", err)
 	}
@@ -140,7 +143,7 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		"webstation": false,
 		"git":        commandAvailable("git"),
 		"database":   true,
-		"deployment": "foundation",
+		"deployment": "atomic-github",
 	}})
 }
 

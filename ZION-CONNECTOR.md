@@ -241,6 +241,24 @@ Verifică următoarele înainte de request:
 - repository-ul trebuie să fie prezent în lista accesibilă installation-ului;
 - nu accepta un installation ID arbitrar doar pentru că este numeric.
 
+### 6. Arhiva pentru deploy atomic
+
+```http
+GET /v1/instances/{instance_id}/github/repositories/{owner}/{repo}/archive?installation_id=123456&ref=main
+Authorization: Bearer <instance credential>
+```
+
+Connectorul verifică faptul că installation-ul aparține instanței și că repository-ul este în lista acordată de GitHub App, apoi descarcă arhiva tar.gz cu token temporar de installation. Tokenul GitHub nu ajunge pe NAS; ReleaseStation primește numai bytes-ii arhivei și îi extrage într-un release local.
+
+Pentru strategia `atomic`, document root-ul site-ului trebuie să fie:
+
+```text
+/volume1/www/example/current -> .zion/releases/<release-id>
+/volume1/www/example/.zion/releases/<release-id>
+```
+
+ReleaseStation pregătește release-ul, păstrează site-ul pe versiunea curentă și înlocuiește symlink-ul `current` prin rename atomic. Arhivele cu path traversal, symlink-uri sau fișiere speciale sunt respinse, iar dimensiunea arhivei și a rezultatului expandat este limitată la 512 MB.
+
 ## Configurarea GitHub App
 
 Creează aplicația sub o organizație Zion, nu sub un cont personal, pentru a putea controla accesul și rotația cheilor.

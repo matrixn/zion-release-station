@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -82,6 +83,14 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := strings.Trim(relative, "/")
+	if strings.HasSuffix(id, "/deploy") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only POST is supported.")
+			return
+		}
+		s.handleSiteDeploy(w, r, strings.TrimSuffix(id, "/deploy"))
+		return
+	}
 	if strings.Contains(id, "/") || id == "" {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "Site not found.")
 		return
@@ -132,6 +141,28 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Unsupported site method.")
 	}
+}
+
+func (s *Server) handleSiteDeploy(w http.ResponseWriter, r *http.Request, id string) {
+	if id == "" || strings.Contains(id, "/") {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Site not found.")
+		return
+	}
+	site, err := s.sites.Get(r.Context(), id)
+	if errors.Is(err, sites.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Site not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "SITES_UNAVAILABLE", err.Error())
+		return
+	}
+	result, err := s.deployer.DeployGitHub(r.Context(), site)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "DEPLOYMENT_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": result})
 }
 
 func (s *Server) handleWebStationStatus(w http.ResponseWriter, r *http.Request) {
@@ -252,24 +283,6 @@ func (s *Server) prepareSiteInput(ctx context.Context, payload sitePayload) (sit
 	if err != nil {
 		return sites.Input{}, nil, err
 	}
-	webRoot := payload.WebRoot
-	if webRoot == "" {
-		webRoot = projectRoot
-		if detectionResult.DocumentRoot != "" {
-			webRoot = filepath.Join(projectRoot, filepath.FromSlash(detectionResult.DocumentRoot))
-		}
-	}
-	webRoot, err = pathsecurity.CanonicalDirectory(webRoot)
-	if err != nil {
-		return sites.Input{}, nil, fmt.Errorf("web root: %w", err)
-	}
-	if !pathsecurity.IsWithin(projectRoot, webRoot) {
-		return sites.Input{}, nil, fmt.Errorf("web root must remain inside project root")
-	}
-	permission, err := permissions.Check(webRoot)
-	if err != nil {
-		return sites.Input{}, nil, err
-	}
 	framework := payload.Framework
 	if framework == "" || framework == "auto" {
 		framework = detectionResult.Framework
@@ -281,6 +294,40 @@ func (s *Server) prepareSiteInput(ctx context.Context, payload sitePayload) (sit
 	status := payload.Status
 	if status == "" {
 		status = "active"
+	}
+	webRoot := payload.WebRoot
+	if webRoot == "" {
+		if strategy == "atomic" {
+			webRoot = filepath.Join(projectRoot, "current")
+		} else {
+			webRoot = projectRoot
+			if detectionResult.DocumentRoot != "" {
+				webRoot = filepath.Join(projectRoot, filepath.FromSlash(detectionResult.DocumentRoot))
+			}
+		}
+	}
+	webRoot = filepath.Clean(webRoot)
+	missingAtomicCurrent := strategy == "atomic" && webRoot == filepath.Join(projectRoot, "current")
+	if missingAtomicCurrent {
+		if _, statErr := os.Stat(webRoot); statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
+			return sites.Input{}, nil, fmt.Errorf("web root: %w", statErr)
+		}
+	} else {
+		webRoot, err = pathsecurity.CanonicalDirectory(webRoot)
+		if err != nil {
+			return sites.Input{}, nil, fmt.Errorf("web root: %w", err)
+		}
+	}
+	if !pathsecurity.IsWithin(projectRoot, webRoot) {
+		return sites.Input{}, nil, fmt.Errorf("web root must remain inside project root")
+	}
+	permissionPath := webRoot
+	if missingAtomicCurrent {
+		permissionPath = projectRoot
+	}
+	permission, err := permissions.Check(permissionPath)
+	if err != nil {
+		return sites.Input{}, nil, err
 	}
 	if !permission.Readable {
 		status = "permission_required"

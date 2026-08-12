@@ -1,0 +1,313 @@
+package deploy
+
+import (
+	"archive/tar"
+	"compress/gzip"
+	"context"
+	"crypto/rand"
+	"database/sql"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/matrixn/zion-release-station/internal/sites"
+)
+
+const maxArchiveSize = 512 * 1024 * 1024
+
+type ArchiveDownloader interface {
+	DownloadArchive(ctx context.Context, installationID int64, fullName, ref string, target io.Writer) error
+}
+
+type Runner struct {
+	db     *sql.DB
+	github ArchiveDownloader
+}
+
+type Result struct {
+	DeploymentID string `json:"deployment_id"`
+	ReleaseID    string `json:"release_id"`
+	ReleasePath  string `json:"release_path"`
+	Commit       string `json:"commit_sha,omitempty"`
+	Status       string `json:"status"`
+}
+
+func NewRunner(db *sql.DB, github ArchiveDownloader) *Runner {
+	return &Runner{db: db, github: github}
+}
+
+func (r *Runner) DeployGitHub(ctx context.Context, site sites.Site) (Result, error) {
+	if site.Strategy != "atomic" {
+		return Result{}, fmt.Errorf("site %q is not configured for atomic deployment", site.ID)
+	}
+	if site.Repository == nil || strings.ToLower(site.Repository.Provider) != "github" {
+		return Result{}, fmt.Errorf("site %q does not have a GitHub repository", site.ID)
+	}
+	if site.Repository.GitHubInstallationID == nil || site.Repository.GitHubFullName == "" {
+		return Result{}, fmt.Errorf("site %q has incomplete GitHub repository metadata", site.ID)
+	}
+	currentPath := filepath.Join(site.ProjectRoot, "current")
+	if filepath.Clean(site.WebRoot) != filepath.Clean(currentPath) {
+		return Result{}, fmt.Errorf("atomic deployment requires document root %q", currentPath)
+	}
+	if err := os.MkdirAll(site.ProjectRoot, 0o755); err != nil {
+		return Result{}, fmt.Errorf("create project root: %w", err)
+	}
+	zionRoot := filepath.Join(site.ProjectRoot, ".zion")
+	releasesRoot := filepath.Join(zionRoot, "releases")
+	if err := os.MkdirAll(releasesRoot, 0o755); err != nil {
+		return Result{}, fmt.Errorf("create release root: %w", err)
+	}
+	lock, err := acquireLock(filepath.Join(zionRoot, "deploy.lock"))
+	if err != nil {
+		return Result{}, err
+	}
+	defer releaseLock(lock)
+
+	deploymentID, err := newID("dep_")
+	if err != nil {
+		return Result{}, err
+	}
+	releaseID, err := newID("rel_")
+	if err != nil {
+		return Result{}, err
+	}
+	branch := strings.TrimSpace(site.Repository.Branch)
+	if branch == "" {
+		branch = site.Repository.GitHubDefaultBranch
+	}
+	if branch == "" {
+		return Result{}, fmt.Errorf("site %q has no GitHub branch configured", site.ID)
+	}
+	if err := r.createDeployment(ctx, deploymentID, site.ID, branch); err != nil {
+		return Result{}, err
+	}
+	failed := true
+	defer func() {
+		if failed {
+			_ = r.finishDeployment(context.Background(), deploymentID, "failed", "DEPLOYMENT_FAILED")
+		}
+	}()
+
+	archiveFile, err := os.CreateTemp(zionRoot, "archive-*.tar.gz")
+	if err != nil {
+		return Result{}, fmt.Errorf("create archive staging file: %w", err)
+	}
+	archivePath := archiveFile.Name()
+	defer os.Remove(archivePath)
+	if err := r.github.DownloadArchive(ctx, *site.Repository.GitHubInstallationID, site.Repository.GitHubFullName, branch, archiveFile); err != nil {
+		archiveFile.Close()
+		return Result{}, err
+	}
+	if err := archiveFile.Close(); err != nil {
+		return Result{}, fmt.Errorf("close archive staging file: %w", err)
+	}
+
+	stagePath := filepath.Join(releasesRoot, releaseID+".staging")
+	defer os.RemoveAll(stagePath)
+	if err := os.MkdirAll(stagePath, 0o700); err != nil {
+		return Result{}, fmt.Errorf("create release staging directory: %w", err)
+	}
+	if err := extractArchive(archivePath, stagePath); err != nil {
+		return Result{}, err
+	}
+	releasePath := filepath.Join(releasesRoot, releaseID)
+	if err := os.Rename(stagePath, releasePath); err != nil {
+		return Result{}, fmt.Errorf("finalize release: %w", err)
+	}
+	if err := r.createRelease(ctx, releaseID, site.ID, deploymentID, releasePath); err != nil {
+		return Result{}, err
+	}
+
+	nextPath := currentPath + ".next-" + releaseID
+	if err := os.Symlink(filepath.Join(".zion", "releases", releaseID), nextPath); err != nil {
+		return Result{}, fmt.Errorf("prepare atomic switch: %w", err)
+	}
+	if err := replaceSymlink(nextPath, currentPath); err != nil {
+		return Result{}, fmt.Errorf("activate release: %w", err)
+	}
+	if err := r.activateRelease(ctx, site.ID, releaseID); err != nil {
+		return Result{}, err
+	}
+	if err := r.finishDeployment(ctx, deploymentID, "completed", ""); err != nil {
+		return Result{}, err
+	}
+	failed = false
+	return Result{DeploymentID: deploymentID, ReleaseID: releaseID, ReleasePath: releasePath, Status: "completed"}, nil
+}
+
+func (r *Runner) createDeployment(ctx context.Context, id, siteID, branch string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := r.db.ExecContext(ctx, `INSERT INTO deployments(id, site_id, trigger_type, branch, status, queued_at, started_at, created_at) VALUES (?, ?, 'manual', ?, 'running', ?, ?, ?)`, id, siteID, branch, now, now, now)
+	if err != nil {
+		return fmt.Errorf("create deployment record: %w", err)
+	}
+	return nil
+}
+
+func (r *Runner) createRelease(ctx context.Context, id, siteID, deploymentID, releasePath string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := r.db.ExecContext(ctx, `INSERT INTO releases(id, site_id, deployment_id, release_name, release_path, active, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)`, id, siteID, deploymentID, id, releasePath, now)
+	if err != nil {
+		return fmt.Errorf("create release record: %w", err)
+	}
+	return nil
+}
+
+func (r *Runner) activateRelease(ctx context.Context, siteID, releaseID string) error {
+	if _, err := r.db.ExecContext(ctx, `UPDATE releases SET active = 0 WHERE site_id = ?`, siteID); err != nil {
+		return fmt.Errorf("deactivate previous releases: %w", err)
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	if _, err := r.db.ExecContext(ctx, `UPDATE releases SET active = 1, health_status = 'not_checked', activated_at = ? WHERE id = ? AND site_id = ?`, now, releaseID, siteID); err != nil {
+		return fmt.Errorf("activate release record: %w", err)
+	}
+	return nil
+}
+
+func (r *Runner) finishDeployment(ctx context.Context, id, status, code string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := r.db.ExecContext(ctx, `UPDATE deployments SET status = ?, error_code = NULLIF(?, ''), finished_at = ?, duration_ms = CAST((julianday(?) - julianday(COALESCE(started_at, queued_at))) * 86400000 AS INTEGER) WHERE id = ?`, status, code, now, now, id)
+	if err != nil {
+		return fmt.Errorf("finish deployment record: %w", err)
+	}
+	return nil
+}
+
+func acquireLock(path string) (*os.File, error) {
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		if errors.Is(err, os.ErrExist) {
+			return nil, fmt.Errorf("another deployment is already running for this site")
+		}
+		return nil, fmt.Errorf("acquire deployment lock: %w", err)
+	}
+	_, _ = io.WriteString(file, time.Now().UTC().Format(time.RFC3339Nano))
+	return file, nil
+}
+
+func releaseLock(file *os.File) {
+	name := file.Name()
+	_ = file.Close()
+	_ = os.Remove(name)
+}
+
+func replaceSymlink(nextPath, currentPath string) error {
+	if info, err := os.Lstat(currentPath); err == nil {
+		if info.Mode()&os.ModeSymlink == 0 {
+			return fmt.Errorf("current path exists and is not a symlink")
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return os.Rename(nextPath, currentPath)
+}
+
+func extractArchive(archivePath, destination string) error {
+	file, err := os.Open(archivePath)
+	if err != nil {
+		return fmt.Errorf("open release archive: %w", err)
+	}
+	defer file.Close()
+	compressed, err := gzip.NewReader(file)
+	if err != nil {
+		return fmt.Errorf("read release archive: %w", err)
+	}
+	defer compressed.Close()
+	reader := tar.NewReader(compressed)
+	var topLevel string
+	var total int64
+	entries := 0
+	for {
+		header, err := reader.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read release archive entry: %w", err)
+		}
+		entries++
+		if entries > 100000 {
+			return fmt.Errorf("release archive contains too many entries")
+		}
+		name := strings.TrimPrefix(strings.ReplaceAll(header.Name, "\\", "/"), "./")
+		parts := strings.SplitN(name, "/", 2)
+		if topLevel == "" {
+			topLevel = parts[0]
+		}
+		relative := name
+		if name == topLevel {
+			continue
+		}
+		prefix := topLevel + "/"
+		if strings.HasPrefix(name, prefix) {
+			relative = strings.TrimPrefix(name, prefix)
+		}
+		clean := path.Clean(relative)
+		if clean == "." || clean == "" || clean == ".." || strings.HasPrefix(clean, "../") || strings.HasPrefix(clean, "/") {
+			return fmt.Errorf("unsafe path in release archive: %q", header.Name)
+		}
+		target := filepath.Join(destination, filepath.FromSlash(clean))
+		if !within(destination, target) {
+			return fmt.Errorf("release archive entry escapes staging directory")
+		}
+		switch header.Typeflag {
+		case tar.TypeDir:
+			if err := os.MkdirAll(target, 0o755); err != nil {
+				return fmt.Errorf("create release directory: %w", err)
+			}
+		case tar.TypeReg, tar.TypeRegA:
+			if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
+				return fmt.Errorf("create release parent: %w", err)
+			}
+			output, err := os.OpenFile(target, os.O_CREATE|os.O_EXCL|os.O_WRONLY, normalizedMode(header.Mode))
+			if err != nil {
+				return fmt.Errorf("create release file: %w", err)
+			}
+			written, copyErr := io.Copy(output, io.LimitReader(reader, maxArchiveSize-total+1))
+			closeErr := output.Close()
+			if copyErr != nil {
+				return fmt.Errorf("extract release file: %w", copyErr)
+			}
+			if closeErr != nil {
+				return fmt.Errorf("close release file: %w", closeErr)
+			}
+			total += written
+			if total > maxArchiveSize {
+				return fmt.Errorf("expanded release exceeds the 512 MB safety limit")
+			}
+		default:
+			return fmt.Errorf("unsupported archive entry type for %q", header.Name)
+		}
+	}
+	if entries == 0 {
+		return fmt.Errorf("release archive is empty")
+	}
+	return nil
+}
+
+func normalizedMode(mode int64) os.FileMode {
+	result := os.FileMode(mode) & 0o777
+	if result == 0 {
+		return 0o644
+	}
+	return result
+}
+
+func within(parent, child string) bool {
+	relative, err := filepath.Rel(parent, child)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(filepath.Separator))
+}
+
+func newID(prefix string) (string, error) {
+	var value [12]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("generate deployment id: %w", err)
+	}
+	return prefix + fmt.Sprintf("%x", value), nil
+}

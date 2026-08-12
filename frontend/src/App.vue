@@ -124,6 +124,9 @@ const githubSaving = ref(false);
 const githubMessage = ref('');
 const githubError = ref('');
 const githubConnectState = ref<'idle' | 'starting' | 'waiting'>('idle');
+const deployingSiteId = ref('');
+const deployMessage = ref('');
+const deployError = ref('');
 let githubPollTimer: ReturnType<typeof setInterval> | undefined;
 let githubPairingHandled = false;
 
@@ -484,6 +487,23 @@ async function archiveSite(site: Site) {
   if (response.ok) await loadSites();
 }
 
+async function deploySite(site: Site) {
+  deployMessage.value = '';
+  deployError.value = '';
+  deployingSiteId.value = site.id;
+  try {
+    const response = await fetch(`/releasestation/api/v1/sites/${site.id}/deploy`, { method: 'POST', headers: { Accept: 'application/json' } });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error?.message || 'Deployment failed.');
+    deployMessage.value = `${site.hostname || site.name} deployed atomically.`;
+    await loadSites();
+  } catch (error) {
+    deployError.value = error instanceof Error ? error.message : 'Deployment failed.';
+  } finally {
+    deployingSiteId.value = '';
+  }
+}
+
 async function openDiscovery() {
   discoveryOpen.value = true;
   discoveryLoading.value = true;
@@ -700,16 +720,19 @@ onBeforeUnmount(() => {
             <div class="site-card-top"><span class="framework-mark"><Code2 :size="17" /></span><button class="more-button" type="button"><MoreHorizontal :size="17" /></button></div>
             <div class="site-domain">{{ site.hostname || site.name }}</div><div class="site-framework">{{ site.framework }}</div>
             <div class="site-status" :class="{ 'site-status-warning': site.status !== 'active' }"><span class="status-dot" />{{ displayStatus(site.status) }}<span class="site-status-time">{{ site.strategy }}</span></div>
-            <div class="site-card-foot"><span><Globe2 :size="14" />{{ site.web_root }}</span><code>{{ site.project_root }}</code><button type="button" aria-label="Deploy site" disabled><Play :size="14" /></button></div>
+            <div class="site-card-foot"><span><Globe2 :size="14" />{{ site.web_root }}</span><code>{{ site.project_root }}</code><button type="button" aria-label="Deploy site" :disabled="deployingSiteId === site.id || !site.repository || site.strategy !== 'atomic'" @click.stop="deploySite(site)"><Play :size="14" /></button></div>
           </article>
           <button class="site-card add-site-card" type="button" @click="openWizard"><span class="add-site-icon"><Plus :size="19" /></span><strong>Add site manually</strong><span>Configure URL, repository and synchronization</span></button>
         </section>
+
+        <div v-if="deployMessage || deployError" class="deployment-toast" :class="{ error: deployError }"><Check v-if="deployMessage" :size="15" />{{ deployMessage || deployError }}</div>
 
         <section v-if="activeNav === 'Sites'" class="sites-management">
           <div class="sites-management-header"><div><div class="eyebrow"><span class="eyebrow-pulse" /> SITE CATALOG</div><h1>Managed sites.</h1><p class="hero-copy">Review imported Web Station applications, document roots and deployment readiness.</p></div><div class="hero-actions"><button class="button button-secondary" type="button" @click="loadSites"><RotateCw :size="15" />Refresh</button><button class="button button-secondary" type="button" @click="openDiscovery"><Globe2 :size="15" />Discover Web Station</button><button class="button button-primary" type="button" @click="openWizard"><Plus :size="15" />Add site</button></div></div>
           <div class="sites-management-summary"><span><strong>{{ sites.length }}</strong> managed sites</span><span><span class="status-dot" />{{ webStationLabel }}</span><span>Discovery adapter: read-only</span></div>
           <div v-if="sites.length" class="management-list">
             <article v-for="site in sites" :key="site.id" class="management-row">
+              <button class="button button-secondary" type="button" :disabled="deployingSiteId === site.id || !site.repository || site.strategy !== 'atomic'" @click="deploySite(site)">{{ deployingSiteId === site.id ? 'Deploying…' : 'Deploy' }} <Play :size="14" /></button>
               <span class="framework-mark"><Code2 :size="17" /></span><span class="management-copy"><strong>{{ site.hostname || site.name }}</strong><small>{{ site.framework }} · {{ site.web_root }}</small><small>{{ site.project_root }}</small></span><span class="discovery-badge" :class="site.status === 'active' ? 'ready' : 'read_only'">{{ displayStatus(site.status) }}</span><button class="more-button" type="button" aria-label="Archive site" @click="archiveSite(site)"><X :size="15" /></button>
             </article>
           </div>

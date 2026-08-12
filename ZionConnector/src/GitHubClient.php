@@ -117,6 +117,28 @@ final class GitHubClient
         throw new RuntimeException('Repository is not accessible by this GitHub installation.');
     }
 
+    /** @return string GitHub tar.gz archive bytes */
+    public function archive(int $installationId, string $owner, string $repo, string $ref): string
+    {
+        $repositoryName = $owner . '/' . $repo;
+        $accessible = false;
+        foreach ($this->repositories($installationId) as $repository) {
+            if (($repository['full_name'] ?? '') === $repositoryName) {
+                $accessible = true;
+                break;
+            }
+        }
+        if (!$accessible) {
+            throw new RuntimeException('Repository is not accessible by this GitHub installation.');
+        }
+        $token = $this->installationToken($installationId);
+        return $this->binaryRequest(
+            'GET',
+            'https://api.github.com/repos/' . rawurlencode($owner) . '/' . rawurlencode($repo) . '/tarball/' . rawurlencode($ref),
+            $this->installationHeaders($token),
+        );
+    }
+
     /** @return array<string,mixed> */
     private function installationToken(int $installationId): array
     {
@@ -210,6 +232,37 @@ final class GitHubClient
             throw new RuntimeException('GitHub HTTP ' . $status . ': ' . $message);
         }
         return $decoded;
+    }
+
+    /** @param list<string> $headers */
+    private function binaryRequest(string $method, string $url, array $headers): string
+    {
+        $handle = curl_init($url);
+        if ($handle === false) {
+            throw new RuntimeException('Unable to initialize the GitHub HTTP client.');
+        }
+        curl_setopt_array($handle, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_FOLLOWLOCATION => true,
+            CURLOPT_CONNECTTIMEOUT => 10,
+            CURLOPT_TIMEOUT => 120,
+            CURLOPT_HTTPHEADER => array_merge(['User-Agent: ZionConnector/1.0', 'X-GitHub-Api-Version: 2022-11-28'], $headers),
+            CURLOPT_CUSTOMREQUEST => $method,
+        ]);
+        $response = curl_exec($handle);
+        $status = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+        $error = curl_error($handle);
+        curl_close($handle);
+        if ($response === false) {
+            throw new RuntimeException('GitHub archive request failed: ' . $error);
+        }
+        if ($status < 200 || $status >= 300) {
+            throw new RuntimeException('GitHub archive request was rejected with HTTP ' . $status . '.');
+        }
+        if (strlen($response) > 512 * 1024 * 1024) {
+            throw new RuntimeException('GitHub archive exceeds the 512 MB safety limit.');
+        }
+        return $response;
     }
 
     private static function base64Url(string $value): string

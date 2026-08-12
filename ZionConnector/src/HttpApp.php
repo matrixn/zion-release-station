@@ -76,6 +76,10 @@ final class HttpApp
                     $this->branches($instanceId, $suffix);
                     return;
                 }
+                if ($resource === 'repositories' && $method === 'GET' && str_ends_with($suffix, '/archive')) {
+                    $this->archive($instanceId, $suffix);
+                    return;
+                }
             }
 
             $this->json(404, ['error' => ['code' => 'NOT_FOUND', 'message' => 'Not found.']]);
@@ -298,6 +302,25 @@ final class HttpApp
             return;
         }
         $this->json(200, ['branches' => $this->github->branches($installationId, rawurldecode($matches[1]), rawurldecode($matches[2]))]);
+    }
+
+    private function archive(string $instanceId, string $suffix): void
+    {
+        if (preg_match('#^([^/]+)/([^/]+)/archive$#', $suffix, $matches) !== 1) {
+            $this->json(422, ['error' => ['code' => 'INVALID_REPOSITORY', 'message' => 'Repository must use owner/name format.']]);
+            return;
+        }
+        $installationId = filter_var($_GET['installation_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        $ref = trim((string) ($_GET['ref'] ?? ''));
+        if (!is_int($installationId) || !$this->database->hasInstallation($instanceId, $installationId) || $ref === '' || strlen($ref) > 256) {
+            $this->json(422, ['error' => ['code' => 'INVALID_ARCHIVE_REQUEST', 'message' => 'A connected installation and a valid Git reference are required.']]);
+            return;
+        }
+        $archive = $this->github->archive($installationId, rawurldecode($matches[1]), rawurldecode($matches[2]), $ref);
+        header('Content-Type: application/gzip');
+        header('Cache-Control: no-store');
+        header('Content-Length: ' . strlen($archive));
+        echo $archive;
     }
 
     /** @return array<string,mixed> */
