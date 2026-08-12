@@ -19,7 +19,12 @@ final class Environment
             [$name, $value] = explode('=', $line, 2);
             $name = trim($name);
             $value = trim($value);
-            if ($name === '' || getenv($name) !== false) {
+            // Web Station may expose an empty variable from the PHP-FPM
+            // profile. Treat that as unset so the connector can load the
+            // configured value from its protected .env file. A non-empty
+            // process environment variable still takes precedence.
+            $existing = getenv($name);
+            if ($name === '' || ($existing !== false && $existing !== '')) {
                 continue;
             }
             if (strlen($value) >= 2 && (($value[0] === '"' && str_ends_with($value, '"')) || ($value[0] === "'" && str_ends_with($value, "'")))) {
