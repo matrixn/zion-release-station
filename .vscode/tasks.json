@@ -7,7 +7,10 @@
       "command": "make test",
       "group": "test",
       "problemMatcher": [],
-      "presentation": { "reveal": "always", "panel": "dedicated" }
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
     },
     {
       "label": "ReleaseStation: Build SPK",
@@ -15,7 +18,10 @@
       "command": "make spk",
       "group": "build",
       "problemMatcher": [],
-      "presentation": { "reveal": "always", "panel": "dedicated" }
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      }
     },
     {
       "label": "Zion Connector: Deploy to Synology",
@@ -23,14 +29,24 @@
       "command": "./scripts/deploy-connector-nas.sh",
       "group": "build",
       "problemMatcher": [],
-      "presentation": { "reveal": "always", "panel": "dedicated", "focus": true, "clear": true }
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true,
+        "clear": true
+      }
     },
     {
       "label": "ReleaseStation: Deploy SPK to DS1019+",
       "type": "shell",
       "command": "make deploy-nas",
       "problemMatcher": [],
-      "presentation": { "reveal": "always", "panel": "dedicated", "focus": true, "clear": true }
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true,
+        "clear": true
+      }
     },
     {
       "label": "ReleaseStation: NAS Status",
@@ -49,7 +65,11 @@
       "type": "shell",
       "command": "make nas-logs",
       "problemMatcher": [],
-      "presentation": { "reveal": "always", "panel": "dedicated", "focus": true }
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true
+      }
     },
     {
       "label": "ReleaseStation: NAS Health Check",
