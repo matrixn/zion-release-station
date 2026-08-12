@@ -5,11 +5,21 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 PROJECT_ROOT="$(CDPATH= cd -- "$SCRIPT_DIR/.." && pwd)"
 CONNECTOR_DIR="$PROJECT_ROOT/ZionConnector"
+CONFIG_FILE="${RS_NAS_CONFIG:-$PROJECT_ROOT/.env.nas}"
+
+if [[ ! -f "$CONFIG_FILE" ]]; then
+    echo "Missing $CONFIG_FILE; create it from .env.nas.example before deploying." >&2
+    exit 1
+fi
+# shellcheck disable=SC1090
+source "$CONFIG_FILE"
 
 NAS_HOST="${NAS_HOST:-192.168.0.10}"
 NAS_PORT="${NAS_PORT:-2022}"
 NAS_USER="${NAS_USER:-wordpress-deploy}"
 NAS_IDENTITY_FILE="${NAS_IDENTITY_FILE:-/home/matrixn/.ssh/wordpress-plugin-deploy}"
+NAS_SUDO="${NAS_SUDO:-sudo}"
+NAS_SUDO_PASS="${NAS_SUDO_PASS:-}"
 REMOTE_PATH="${CONNECTOR_REMOTE_PATH:-/volume1/www/connector.raduta.synology.me}"
 
 if [[ ! -d "$CONNECTOR_DIR" ]]; then
@@ -51,6 +61,7 @@ SSH_OPTIONS=(
     -o BatchMode=yes
     -o StrictHostKeyChecking=yes
 )
+[[ -r "$NAS_IDENTITY_FILE" ]] || { echo "NAS identity file is not readable: $NAS_IDENTITY_FILE" >&2; exit 1; }
 REMOTE="$NAS_USER@$NAS_HOST"
 REMOTE_STAGE="/tmp/.zion-connector-deploy-$$"
 
@@ -74,12 +85,28 @@ tar \
     -C "$CONNECTOR_DIR" -czf - . \
     | ssh "${SSH_OPTIONS[@]}" "$REMOTE" "tar -xzf - -C '$REMOTE_STAGE'"
 
-ssh "${SSH_OPTIONS[@]}" "$REMOTE" "
-    mkdir -p '$REMOTE_PATH/var' '$REMOTE_PATH/key';
-    cp -a '$REMOTE_STAGE'/. '$REMOTE_PATH'/;
-    chmod 600 '$REMOTE_PATH/.env' '$REMOTE_PATH/key/github-private-key.pem';
-    chmod 700 '$REMOTE_PATH/var';
-    rm -rf '$REMOTE_STAGE';
-"
+run_remote_sudo() {
+    local remote_script="$1"
+    if [[ -n "$NAS_SUDO_PASS" ]]; then
+        {
+            printf '%s\n' "$NAS_SUDO_PASS"
+            printf '%s\n' "$remote_script"
+        } | ssh "${SSH_OPTIONS[@]}" "$REMOTE" "$NAS_SUDO -S -p '' sh -s -- '$REMOTE_STAGE' '$REMOTE_PATH'"
+        return
+    fi
+    printf '%s\n' "$remote_script" | ssh -tt "${SSH_OPTIONS[@]}" "$REMOTE" "$NAS_SUDO sh -s -- '$REMOTE_STAGE' '$REMOTE_PATH'"
+}
+
+run_remote_sudo '
+set -eu
+stage="$1"
+target="$2"
+mkdir -p "$target/var" "$target/key"
+# Do not preserve source owner/mode metadata on the Synology volume.
+cp -R "$stage"/. "$target"/
+chmod 600 "$target/.env" "$target/key/github-private-key.pem"
+chmod 700 "$target/var"
+rm -rf "$stage"
+'
 
 echo "Connector deployed to $REMOTE_PATH"
