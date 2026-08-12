@@ -22,6 +22,14 @@ final class HttpApp
             $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
             $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
 
+            if ($method === 'GET' && $path === '/') {
+                $this->json(200, [
+                    'service' => 'Zion Connector',
+                    'status' => 'ok',
+                    'health_url' => '/healthz',
+                ]);
+                return;
+            }
             if ($method === 'GET' && $path === '/healthz') {
                 $this->json(200, ['status' => 'ok', 'github_configured' => $this->config->githubConfigured()]);
                 return;
