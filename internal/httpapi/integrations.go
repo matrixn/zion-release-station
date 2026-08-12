@@ -85,7 +85,27 @@ func (s *Server) handleGitHubInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	returnURL := s.publicReturnURL(r)
+	returnURL := ""
+	if r.ContentLength != 0 {
+		var payload struct {
+			ReturnURL string `json:"return_url"`
+		}
+		if err := decodeJSON(w, r, &payload); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_RETURN_URL", "The GitHub callback URL must be valid JSON.")
+			return
+		}
+		returnURL = strings.TrimSpace(payload.ReturnURL)
+		if returnURL != "" {
+			parsed, err := url.Parse(returnURL)
+			if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
+				writeError(w, http.StatusBadRequest, "INVALID_RETURN_URL", "The GitHub callback URL must be an HTTPS URL.")
+				return
+			}
+		}
+	}
+	if returnURL == "" {
+		returnURL = s.publicReturnURL(r)
+	}
 	if !s.githubManaged.Configured() {
 		pairing, err := s.githubManaged.StartPairingSession(r.Context(), returnURL)
 		if err != nil {

@@ -257,9 +257,16 @@
       },
       installGithubApp: function () {
         var self = this;
-        fetch('/releasestation/api/v1/integrations/github/install', { method: 'POST', headers: { Accept: 'application/json' } })
+        self.githubConfigState = 'saving';
+        self.githubMessage = 'Se deschide autorizarea GitHub…';
+        fetch('/releasestation/api/v1/integrations/github/install', { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ return_url: window.location.href.split('?')[0] }) })
           .then(function (response) { return response.json().then(function (payload) { if (!response.ok) throw new Error((payload.error && payload.error.message) || 'GitHub App nu este configurată complet.'); return payload; }); })
-          .then(function (payload) { window.open(payload.data.url, '_blank'); })
+          .then(function (payload) {
+            var authorizationWindow = window.open(payload.data.url, '_blank', 'noopener,noreferrer');
+            if (!authorizationWindow) window.location.assign(payload.data.url);
+            else self.githubMessage = 'Autorizarea GitHub s-a deschis într-o fereastră nouă.';
+            self.githubConfigState = 'saved';
+          })
           .catch(function (error) { self.githubConfigState = 'error'; self.githubMessage = error.message; });
       },
       checkHealth: function () {
