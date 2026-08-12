@@ -242,12 +242,8 @@ func TestGitHubConnectorStartsPairingWithoutProvisionedCredential(t *testing.T) 
 			http.NotFound(w, r)
 			return
 		}
-		body, _ := io.ReadAll(r.Body)
-		if !strings.Contains(string(body), "https://raduta.synology.me:5001/webman/3rdparty/zion-releasestation/index.html") {
-			t.Fatalf("pairing request did not preserve native callback URL: %s", body)
-		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = io.WriteString(w, `{"id":"rs_test","authorize_url":"https://github.com/apps/zion/installations/new?state=test","expires_in":600}`)
+		_, _ = io.WriteString(w, `{"id":"rs_test","authorize_url":"https://github.com/apps/zion/installations/new?state=test","poll_token":"pairing-token","expires_in":600}`)
 	}))
 	defer connector.Close()
 
@@ -266,8 +262,7 @@ func TestGitHubConnectorStartsPairingWithoutProvisionedCredential(t *testing.T) 
 	}, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
 
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPost, "/releasestation/api/v1/integrations/github/install", strings.NewReader(`{"return_url":"https://raduta.synology.me:5001/webman/3rdparty/zion-releasestation/index.html"}`))
-	request.Header.Set("Content-Type", "application/json")
+	request := httptest.NewRequest(http.MethodPost, "/releasestation/api/v1/integrations/github/install", nil)
 	server.http.Handler.ServeHTTP(recorder, request)
 	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"mode":"pairing"`) || !strings.Contains(recorder.Body.String(), `"session_id":"rs_test"`) {
 		t.Fatalf("unexpected pairing install response: %d %q", recorder.Code, recorder.Body.String())

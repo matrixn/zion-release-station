@@ -85,29 +85,8 @@ func (s *Server) handleGitHubInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	returnURL := ""
-	if r.ContentLength != 0 {
-		var payload struct {
-			ReturnURL string `json:"return_url"`
-		}
-		if err := decodeJSON(w, r, &payload); err != nil {
-			writeError(w, http.StatusBadRequest, "INVALID_RETURN_URL", "The GitHub callback URL must be valid JSON.")
-			return
-		}
-		returnURL = strings.TrimSpace(payload.ReturnURL)
-		if returnURL != "" {
-			parsed, err := url.Parse(returnURL)
-			if err != nil || parsed.Scheme != "https" || parsed.Hostname() == "" {
-				writeError(w, http.StatusBadRequest, "INVALID_RETURN_URL", "The GitHub callback URL must be an HTTPS URL.")
-				return
-			}
-		}
-	}
-	if returnURL == "" {
-		returnURL = s.publicReturnURL(r)
-	}
 	if !s.githubManaged.Configured() {
-		pairing, err := s.githubManaged.StartPairingSession(r.Context(), returnURL)
+		pairing, err := s.githubManaged.StartPairingSession(r.Context(), "")
 		if err != nil {
 			writeError(w, http.StatusBadGateway, "GITHUB_CONNECTOR_UNAVAILABLE", err.Error())
 			return
@@ -115,12 +94,13 @@ func (s *Server) handleGitHubInstall(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
 			"mode":       "pairing",
 			"session_id": pairing.ID,
+			"poll_token": pairing.PollToken,
 			"url":        pairing.AuthorizeURL,
 			"expires_in": pairing.ExpiresIn,
-			"return_url": returnURL,
 		}})
 		return
 	}
+	returnURL := s.publicReturnURL(r)
 	session, err := s.githubManaged.StartSession(r.Context(), returnURL)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "GITHUB_CONNECTOR_UNAVAILABLE", err.Error())
@@ -133,6 +113,41 @@ func (s *Server) handleGitHubInstall(w http.ResponseWriter, r *http.Request) {
 		"expires_in": session.ExpiresIn,
 		"return_url": returnURL,
 	}})
+}
+
+func (s *Server) handleGitHubPairingStatus(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only POST is supported.")
+		return
+	}
+	var payload struct {
+		SessionID string `json:"session_id"`
+		PollToken string `json:"poll_token"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil || strings.TrimSpace(payload.SessionID) == "" || strings.TrimSpace(payload.PollToken) == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_PAIRING", "The pairing session and token are required.")
+		return
+	}
+	status, err := s.githubManaged.PairingStatus(r.Context(), payload.SessionID, payload.PollToken)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "GITHUB_CONNECTOR_UNAVAILABLE", err.Error())
+		return
+	}
+	if status.State != "authorized" {
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"state": status.State, "connected": false}})
+		return
+	}
+	credential, err := s.githubManaged.CompletePairing(r.Context(), status.PairingCode)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "GITHUB_CONNECTOR_UNAVAILABLE", err.Error())
+		return
+	}
+	if err := s.config.SaveConnectorCredential(credential); err != nil {
+		writeError(w, http.StatusInternalServerError, "CONNECTOR_STATE_UNAVAILABLE", "The connector credential could not be stored securely.")
+		return
+	}
+	s.githubManaged.SetCredential(credential)
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"state": "connected", "connected": true}})
 }
 
 func (s *Server) handleGitHubPairingComplete(w http.ResponseWriter, r *http.Request) {

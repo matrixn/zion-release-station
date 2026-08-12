@@ -233,6 +233,15 @@ final class Database
         return is_array($row) ? $row : null;
     }
 
+    /** @return array<string,mixed>|null */
+    public function findPairingSessionById(string $id, string $stateHash): ?array
+    {
+        $statement = $this->pdo->prepare('SELECT * FROM connector_pairing_sessions WHERE id = :id AND state_hash = :state_hash AND status IN (\'pending\', \'authorized\') AND expires_at > :now LIMIT 1');
+        $statement->execute(['id' => $id, 'state_hash' => $stateHash, 'now' => gmdate('c')]);
+        $row = $statement->fetch();
+        return is_array($row) ? $row : null;
+    }
+
     public function authorizePairingSession(string $id, int $installationId): void
     {
         $statement = $this->pdo->prepare('UPDATE connector_pairing_sessions SET status = \'authorized\', github_installation_id = :installation_id, authorized_at = :authorized_at WHERE id = :id AND status = \'pending\'');

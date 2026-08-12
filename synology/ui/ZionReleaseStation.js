@@ -124,7 +124,8 @@
         github: { mode: 'managed', configured: false, connected: false, installations: [], configuration_error: 'Zion Connector is not provisioned for this ReleaseStation instance' },
         githubConfig: { app_id: '', app_slug: '', setup_url: '' },
         githubConfigState: 'loading',
-        githubMessage: ''
+        githubMessage: '',
+        githubPairingTimer: null
       };
     },
     computed: {
@@ -259,15 +260,47 @@
         var self = this;
         self.githubConfigState = 'saving';
         self.githubMessage = 'Se deschide autorizarea GitHub…';
-        fetch('/releasestation/api/v1/integrations/github/install', { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ return_url: window.location.href.split('?')[0] }) })
+        fetch('/releasestation/api/v1/integrations/github/install', { method: 'POST', headers: { Accept: 'application/json' } })
           .then(function (response) { return response.json().then(function (payload) { if (!response.ok) throw new Error((payload.error && payload.error.message) || 'GitHub App nu este configurată complet.'); return payload; }); })
           .then(function (payload) {
-            var authorizationWindow = window.open(payload.data.url, '_blank', 'noopener,noreferrer');
-            if (!authorizationWindow) window.location.assign(payload.data.url);
+            if (authorizationWindow) authorizationWindow.location.href = payload.data.url;
+            else window.location.assign(payload.data.url);
+            if (payload.data.mode === 'pairing' && payload.data.session_id && payload.data.poll_token) self.startGithubPairingPolling(payload.data.session_id, payload.data.poll_token);
             else self.githubMessage = 'Autorizarea GitHub s-a deschis într-o fereastră nouă.';
             self.githubConfigState = 'saved';
           })
           .catch(function (error) { self.githubConfigState = 'error'; self.githubMessage = error.message; });
+      },
+      startGithubPairingPolling: function (sessionId, pollToken) {
+        var self = this;
+        if (self.githubPairingTimer) clearInterval(self.githubPairingTimer);
+        var attempts = 0;
+        var poll = function () {
+          attempts += 1;
+          fetch('/releasestation/api/v1/integrations/github/pairing-status', { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ session_id: sessionId, poll_token: pollToken }) })
+            .then(function (response) { return response.json().then(function (payload) { if (!response.ok) throw new Error((payload.error && payload.error.message) || 'Nu am putut verifica pairing-ul GitHub.'); return payload; }); })
+            .then(function (payload) {
+              if (payload.data && payload.data.connected) {
+                if (self.githubPairingTimer) clearInterval(self.githubPairingTimer);
+                self.githubPairingTimer = null;
+                self.githubMessage = 'GitHub a fost conectat. Repository-urile private sunt disponibile.';
+                self.loadGithub();
+              } else if (attempts >= 120) {
+                if (self.githubPairingTimer) clearInterval(self.githubPairingTimer);
+                self.githubPairingTimer = null;
+                self.githubConfigState = 'error';
+                self.githubMessage = 'Pairing-ul GitHub a expirat. Încearcă din nou.';
+              }
+            })
+            .catch(function (error) {
+              if (self.githubPairingTimer) clearInterval(self.githubPairingTimer);
+              self.githubPairingTimer = null;
+              self.githubConfigState = 'error';
+              self.githubMessage = error.message;
+            });
+        };
+        poll();
+        self.githubPairingTimer = setInterval(poll, 3000);
       },
       checkHealth: function () {
         var self = this;

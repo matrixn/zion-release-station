@@ -46,6 +46,14 @@ final class HttpApp
                 $this->exchangePairing();
                 return;
             }
+            if ($method === 'GET' && preg_match('#^/pairing/sessions/([^/]+)/status$#', $path, $matches) === 1) {
+                $this->pairingStatus(rawurldecode($matches[1]));
+                return;
+            }
+            if ($method === 'GET' && $path === '/pairing/complete') {
+                $this->pairingCompletePage();
+                return;
+            }
             if ($method === 'GET' && $path === '/github/callback') {
                 $this->callback();
                 return;
@@ -125,11 +133,10 @@ final class HttpApp
         }
         $body = $this->requestBody();
         $instanceId = trim((string) ($body['instance_id'] ?? ''));
-        $returnUrl = trim((string) ($body['return_url'] ?? ''));
-        $parsed = parse_url($returnUrl);
-        $returnHost = is_array($parsed) ? strtolower((string) ($parsed['host'] ?? '')) : '';
-        if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{1,127}$/', $instanceId) || $returnHost === '' || !$this->config->isAllowedReturnUrl($returnUrl, $returnHost)) {
-            $this->json(422, ['error' => ['code' => 'INVALID_PAIRING', 'message' => 'The ReleaseStation instance and HTTPS return URL are invalid.']]);
+        $completionUrl = $this->config->publicBaseUrl . '/pairing/complete';
+        $returnHost = strtolower((string) parse_url($completionUrl, PHP_URL_HOST));
+        if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{1,127}$/', $instanceId)) {
+            $this->json(422, ['error' => ['code' => 'INVALID_PAIRING', 'message' => 'The ReleaseStation instance is invalid.']]);
             return;
         }
         if ($this->database->findInstance($instanceId) !== null) {
@@ -141,12 +148,13 @@ final class HttpApp
             self::randomToken(18),
             $instanceId,
             hash('sha256', $state),
-            $returnUrl,
+            $completionUrl,
             gmdate('c', time() + 600),
         );
         $this->json(200, [
             'id' => $instanceId,
             'authorize_url' => $this->github->authorizationUrl($state),
+            'poll_token' => $state,
             'expires_in' => 600,
         ]);
     }
@@ -166,6 +174,33 @@ final class HttpApp
             return;
         }
         $this->json(200, ['credential' => $this->config->pairingCredential($instanceId, $pairingCode)]);
+    }
+
+    private function pairingStatus(string $sessionId): void
+    {
+        $pairingToken = trim((string) ($_GET['pairing_token'] ?? ''));
+        if ($sessionId === '' || $pairingToken === '') {
+            $this->json(422, ['error' => ['code' => 'INVALID_PAIRING', 'message' => 'The pairing session and token are required.']]);
+            return;
+        }
+        $session = $this->database->findPairingSessionById($sessionId, hash('sha256', $pairingToken));
+        if ($session === null) {
+            $this->json(401, ['error' => ['code' => 'INVALID_PAIRING', 'message' => 'The pairing session is invalid or expired.']]);
+            return;
+        }
+        $payload = ['state' => (string) $session['status'], 'expires_in' => 600];
+        if ((string) $session['status'] === 'authorized') {
+            $payload['pairing_code'] = $pairingToken;
+        }
+        $this->json(200, $payload);
+    }
+
+    private function pairingCompletePage(): void
+    {
+        http_response_code(200);
+        header('Content-Type: text/html; charset=utf-8');
+        header('Cache-Control: no-store');
+        echo '<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Zion Connector</title><style>body{font:16px system-ui,sans-serif;background:#f5f7fb;color:#182230;display:grid;place-items:center;min-height:100vh;margin:0}.card{max-width:520px;margin:24px;padding:32px;background:#fff;border:1px solid #dce3ec;border-radius:14px;box-shadow:0 12px 40px #1e33421a}h1{font-size:24px;margin:0 0 12px}p{line-height:1.55;color:#5d6b7a}.ok{color:#16845b;font-weight:700}</style></head><body><main class="card"><div class="ok">GitHub authorization completed</div><h1>Return to Zion ReleaseStation</h1><p>You can close this window. The ReleaseStation application is checking the connection and will update automatically.</p></main></body></html>';
     }
 
     /** @param array<string,mixed> $instance */
@@ -242,7 +277,7 @@ final class HttpApp
         ]);
         if ($isPairing) {
             $this->database->authorizePairingSession((string) $session['id'], $installationId);
-            header('Location: ' . $this->withQuery((string) $session['return_url'], ['github' => 'connected', 'pairing_code' => $state]), true, 303);
+            header('Location: ' . $this->withQuery((string) $session['return_url'], ['session_id' => $session['id']]), true, 303);
             return;
         }
         header('Location: ' . $session['return_url'], true, 303);

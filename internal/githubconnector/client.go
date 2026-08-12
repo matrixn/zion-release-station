@@ -35,7 +35,14 @@ type Session struct {
 type PairingSession struct {
 	ID           string `json:"id"`
 	AuthorizeURL string `json:"authorize_url"`
+	PollToken    string `json:"poll_token"`
 	ExpiresIn    int    `json:"expires_in"`
+}
+
+type PairingStatus struct {
+	State       string `json:"state"`
+	PairingCode string `json:"pairing_code,omitempty"`
+	ExpiresIn   int    `json:"expires_in"`
 }
 
 type Installation struct {
@@ -139,6 +146,23 @@ func (c *Client) StartPairingSession(ctx context.Context, returnURL string) (Pai
 	}
 	if response.ID == "" || response.AuthorizeURL == "" {
 		return PairingSession{}, fmt.Errorf("connector returned an incomplete pairing session")
+	}
+	if response.PollToken == "" {
+		return PairingSession{}, fmt.Errorf("connector returned no pairing poll token")
+	}
+	return response, nil
+}
+
+func (c *Client) PairingStatus(ctx context.Context, sessionID, pollToken string) (PairingStatus, error) {
+	if !c.PairingConfigured() {
+		return PairingStatus{}, fmt.Errorf("managed GitHub connector is not configured: %s", c.ConfigurationError())
+	}
+	query := url.Values{}
+	query.Set("pairing_token", strings.TrimSpace(pollToken))
+	var response PairingStatus
+	endpoint := c.baseURLValue() + "/pairing/sessions/" + url.PathEscape(strings.TrimSpace(sessionID)) + "/status?" + query.Encode()
+	if err := c.requestPublic(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
+		return PairingStatus{}, fmt.Errorf("read connector pairing status: %w", err)
 	}
 	return response, nil
 }

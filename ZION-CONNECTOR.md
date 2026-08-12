@@ -41,10 +41,10 @@ Dacă variabilele managed lipsesc, butonul rămâne vizibil, dar acțiunea va in
 
 SPK-ul comercial nu primește App ID, client secret, `.pem` sau PAT. El cunoaște doar URL-ul connectorului, de exemplu `https://connect.example.com`.
 
-1. ReleaseStation apelează `POST /pairing/sessions` fără credential și trimite `instance_id` plus URL-ul HTTPS de revenire.
-2. Connectorul creează o sesiune de 10 minute și trimite utilizatorul la instalarea aplicației Zion în GitHub.
-3. Callback-ul verifică OAuth-ul, utilizatorul și installation-ul GitHub, apoi revine în aplicație cu un cod de pairing de unică folosință.
-4. ReleaseStation schimbă acel cod prin `POST /pairing/exchange` și salvează credentialul primit în `/var/packages/zion-releasestation/var/connector.json` cu `0600`.
+1. ReleaseStation apelează `POST /pairing/sessions` fără credential și trimite doar `instance_id`.
+2. Connectorul creează o sesiune de 10 minute, returnează un `poll_token` de unică folosință și trimite utilizatorul la instalarea aplicației Zion în GitHub.
+3. Callback-ul verifică OAuth-ul, utilizatorul și installation-ul GitHub, apoi afișează o pagină neutră pe connector. Nu redirecționează către domeniul Zion sau către un URL al clientului.
+4. ReleaseStation verifică `GET /pairing/sessions/{session_id}/status?pairing_token=...` prin API-ul local, schimbă codul autorizat prin `POST /pairing/exchange` și salvează credentialul primit în `/var/packages/zion-releasestation/var/connector.json` cu `0600`.
 
 Pentru development sau provisioning controlat pot fi setate explicit `RS_INSTANCE_ID` și `RS_GITHUB_CONNECTOR_TOKEN`, dar acestea nu trebuie livrate clienților. În fluxul comercial nu există configurare locală cu App ID sau `.pem`.
 

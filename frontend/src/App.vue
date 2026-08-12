@@ -128,6 +128,8 @@ const deployingSiteId = ref('');
 const deployMessage = ref('');
 const deployError = ref('');
 let githubPollTimer: ReturnType<typeof setInterval> | undefined;
+let githubPairingSessionId = '';
+let githubPairingToken = '';
 let githubPairingHandled = false;
 
 function emptyGithubState(): GithubState {
@@ -331,13 +333,19 @@ async function installGithubApp() {
   githubError.value = '';
   githubMessage.value = '';
   githubConnectState.value = 'starting';
+  const authWindow = window.open('about:blank', '_blank', 'noopener,noreferrer');
   try {
     const response = await fetch('/releasestation/api/v1/integrations/github/install', { method: 'POST', headers: { Accept: 'application/json' } });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut porni instalarea GitHub App.');
-    const authWindow = window.open(payload.data.url, '_blank', 'noopener');
-    if (!authWindow) window.location.href = payload.data.url;
-    if (payload.data.mode === 'managed' || payload.data.mode === 'pairing') {
+    if (authWindow) authWindow.location.href = payload.data.url;
+    else window.location.href = payload.data.url;
+    if (payload.data.mode === 'pairing' && payload.data.session_id && payload.data.poll_token) {
+      githubPairingSessionId = payload.data.session_id;
+      githubPairingToken = payload.data.poll_token;
+      githubConnectState.value = 'waiting';
+      startGithubPairingPolling();
+    } else if (payload.data.mode === 'managed') {
       githubConnectState.value = 'waiting';
       startGithubStatusPolling();
     } else {
@@ -347,6 +355,41 @@ async function installGithubApp() {
     githubConnectState.value = 'idle';
     githubError.value = error instanceof Error ? error.message : 'Nu am putut porni instalarea GitHub App.';
   }
+}
+
+function startGithubPairingPolling() {
+  if (githubPollTimer) clearInterval(githubPollTimer);
+  let attempts = 0;
+  githubPollTimer = setInterval(async () => {
+    attempts += 1;
+    try {
+      const response = await fetch('/releasestation/api/v1/integrations/github/pairing-status', {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: githubPairingSessionId, poll_token: githubPairingToken }),
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut verifica pairing-ul GitHub.');
+      if (payload.data?.connected) {
+        clearInterval(githubPollTimer);
+        githubPollTimer = undefined;
+        githubConnectState.value = 'idle';
+        githubMessage.value = 'GitHub a fost conectat. Repository-urile private permise sunt disponibile.';
+        await loadGithubStatus();
+        loadGithubRepositories();
+      } else if (attempts >= 120) {
+        clearInterval(githubPollTimer);
+        githubPollTimer = undefined;
+        githubConnectState.value = 'idle';
+        githubError.value = 'Pairing-ul GitHub a expirat. Încearcă din nou.';
+      }
+    } catch (error) {
+      clearInterval(githubPollTimer);
+      githubPollTimer = undefined;
+      githubConnectState.value = 'idle';
+      githubError.value = error instanceof Error ? error.message : 'Nu am putut verifica pairing-ul GitHub.';
+    }
+  }, 3000);
 }
 
 function startGithubStatusPolling() {
