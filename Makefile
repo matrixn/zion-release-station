@@ -3,6 +3,7 @@ SHELL := /usr/bin/env bash
 VERSION ?= 0.1.0
 BUILD_NUMBER ?= $(shell date +%s)
 DIST_DIR := dist
+GO_BIN ?= $(shell if command -v go >/dev/null 2>&1; then command -v go; elif [ -x /tmp/zion-go/bin/go ]; then printf '%s' /tmp/zion-go/bin/go; fi)
 
 .PHONY: help frontend backend test lint spk spk-validate deploy-nas install-nas nas-status nas-restart nas-logs nas-health clean
 
@@ -27,12 +28,14 @@ backend:
 	VERSION=$(VERSION) ./scripts/build-backend.sh
 
 test:
-	go test ./...
+	@test -n "$(GO_BIN)" || { printf '%s\n' 'Go toolchain not found. Set GO_BIN=/path/to/go.' >&2; exit 127; }
+	"$(GO_BIN)" test ./...
 	cd frontend && npm run build
 
 lint:
 	gofmt -w cmd internal
-	go vet ./...
+	@test -n "$(GO_BIN)" || { printf '%s\n' 'Go toolchain not found. Set GO_BIN=/path/to/go.' >&2; exit 127; }
+	"$(GO_BIN)" vet ./...
 	cd frontend && npm run typecheck
 
 spk:
