@@ -194,6 +194,53 @@ func TestGitHubAppConfigurationIsManagedByAPI(t *testing.T) {
 	}
 }
 
+func TestManagedGitHubConnectorStartsSessionAndReportsConnection(t *testing.T) {
+	connector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "Bearer connector-test-token" {
+			t.Fatalf("unexpected connector authorization %q", got)
+		}
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/instances/test-instance/github/sessions":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"session_123","authorize_url":"https://github.com/apps/zion/installations/new?state=test","expires_in":600}`)
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/instances/test-instance/github/status":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"state":"connected","account_login":"matrixn","installations":[{"github_installation_id":42,"account_login":"matrixn","account_type":"User","repository_selection":"selected"}]}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer connector.Close()
+
+	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(config.Config{
+		WebRoot:              t.TempDir(),
+		Version:              "0.1.0-test",
+		GitHubConnectorURL:   connector.URL,
+		GitHubConnectorToken: "connector-test-token",
+		InstanceID:           "test-instance",
+	}, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/releasestation/api/v1/integrations/github/install", nil)
+	server.http.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"session_id":"session_123"`) || !strings.Contains(recorder.Body.String(), `"mode":"managed"`) {
+		t.Fatalf("unexpected managed install response: %d %q", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/releasestation/api/v1/integrations/github", nil)
+	server.http.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"mode":"managed"`) || !strings.Contains(recorder.Body.String(), `"connected":true`) || !strings.Contains(recorder.Body.String(), `"account_login":"matrixn"`) {
+		t.Fatalf("unexpected managed GitHub status: %d %q", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestManualSiteAPIAutoDetectsFrameworkAndSavesRepository(t *testing.T) {
 	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
 	if err != nil {

@@ -57,6 +57,10 @@ func (s *Server) handleGitHubConnection(w http.ResponseWriter, r *http.Request) 
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only GET is supported.")
 		return
 	}
+	if s.githubManaged.Configured() {
+		s.handleManagedGitHubConnection(w, r)
+		return
+	}
 	installations, err := s.githubStore.List(r.Context())
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, "SETTINGS_UNAVAILABLE", "Unable to read GitHub App installations.")
@@ -65,6 +69,7 @@ func (s *Server) handleGitHubConnection(w http.ResponseWriter, r *http.Request) 
 	cfg := s.github.Config()
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
 		"configured":             s.github.Configured(),
+		"mode":                   "self_hosted",
 		"configuration_error":    s.github.ConfigurationError(),
 		"connected":              s.github.Configured() && len(installations) > 0,
 		"app_id":                 cfg.GitHubAppID,
@@ -72,6 +77,40 @@ func (s *Server) handleGitHubConnection(w http.ResponseWriter, r *http.Request) 
 		"setup_url":              s.github.SetupURL(),
 		"private_key_configured": cfg.GitHubPrivateKeyPath != "" && readablePath(cfg.GitHubPrivateKeyPath),
 		"installations":          installations,
+	}})
+}
+
+func (s *Server) handleManagedGitHubConnection(w http.ResponseWriter, r *http.Request) {
+	status, err := s.githubManaged.Status(r.Context())
+	if err != nil {
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+			"configured":             true,
+			"mode":                   "managed",
+			"configuration_error":    err.Error(),
+			"connected":              false,
+			"private_key_configured": true,
+			"installations":          []any{},
+		}})
+		return
+	}
+	installations := make([]map[string]any, 0, len(status.Installations))
+	for _, installation := range status.Installations {
+		installations = append(installations, map[string]any{
+			"github_installation_id": installation.GitHubID,
+			"account_login":          installation.AccountLogin,
+			"account_type":           installation.AccountType,
+			"repository_selection":   installation.RepositorySelection,
+			"permissions":            installation.Permissions,
+		})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+		"configured":             true,
+		"mode":                   "managed",
+		"configuration_error":    status.Message,
+		"connected":              status.State == "connected" && len(installations) > 0,
+		"private_key_configured": true,
+		"installations":          installations,
+		"account_login":          status.AccountLogin,
 	}})
 }
 
@@ -200,6 +239,22 @@ func (s *Server) handleGitHubInstall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only POST is supported.")
 		return
 	}
+	if s.githubManaged.Configured() {
+		returnURL := s.publicReturnURL(r)
+		session, err := s.githubManaged.StartSession(r.Context(), returnURL)
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "GITHUB_CONNECTOR_UNAVAILABLE", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+			"mode":       "managed",
+			"session_id": session.ID,
+			"url":        session.AuthorizeURL,
+			"expires_in": session.ExpiresIn,
+			"return_url": returnURL,
+		}})
+		return
+	}
 	if !s.github.Configured() {
 		writeError(w, http.StatusServiceUnavailable, "GITHUB_APP_NOT_CONFIGURED", s.github.ConfigurationError())
 		return
@@ -223,6 +278,18 @@ func (s *Server) handleGitHubInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"url": installURL, "expires_in": 600}})
+}
+
+func (s *Server) publicReturnURL(r *http.Request) string {
+	proto := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
+	if proto != "https" {
+		proto = "https"
+	}
+	host := strings.TrimSpace(r.Host)
+	if host == "" {
+		host = "127.0.0.1:24871"
+	}
+	return proto + "://" + host + "/releasestation/?github=connected"
 }
 
 func (s *Server) handleGitHubSetup(w http.ResponseWriter, r *http.Request) {
@@ -260,6 +327,29 @@ func (s *Server) handleGitHubRepositories(w http.ResponseWriter, r *http.Request
 	}
 	if r.Method != http.MethodGet {
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only GET is supported.")
+		return
+	}
+	if s.githubManaged.Configured() {
+		repositories, err := s.githubManaged.Repositories(r.Context())
+		if err != nil {
+			writeError(w, http.StatusBadGateway, "GITHUB_CONNECTOR_UNAVAILABLE", err.Error())
+			return
+		}
+		result := make([]map[string]any, 0, len(repositories))
+		for _, repository := range repositories {
+			result = append(result, map[string]any{
+				"installation_id": repository.InstallationID,
+				"account_login":   repository.AccountLogin,
+				"id":              repository.ID,
+				"name":            repository.Name,
+				"full_name":       repository.FullName,
+				"private":         repository.Private,
+				"default_branch":  repository.DefaultBranch,
+				"clone_url":       repository.CloneURL,
+				"ssh_url":         repository.SSHURL,
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": result})
 		return
 	}
 	if !s.github.Configured() {
@@ -325,7 +415,12 @@ func (s *Server) handleGitHubBranches(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_INSTALLATION", "installation_id must be a positive integer.")
 		return
 	}
-	branches, err := s.github.Branches(r.Context(), installationID, parts[0]+"/"+parts[1])
+	var branches []string
+	if s.githubManaged.Configured() {
+		branches, err = s.githubManaged.Branches(r.Context(), installationID, parts[0]+"/"+parts[1])
+	} else {
+		branches, err = s.github.Branches(r.Context(), installationID, parts[0]+"/"+parts[1])
+	}
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "GITHUB_UNAVAILABLE", "The repository branches could not be read.")
 		return

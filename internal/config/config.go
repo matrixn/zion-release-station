@@ -15,6 +15,9 @@ type Config struct {
 	GitHubAppSlug        string
 	GitHubPrivateKeyPath string
 	GitHubSetupURL       string
+	GitHubConnectorURL   string
+	GitHubConnectorToken string
+	InstanceID           string
 	Version              string
 }
 
@@ -28,6 +31,9 @@ func Load() Config {
 		GitHubAppSlug:        os.Getenv("RS_GITHUB_APP_SLUG"),
 		GitHubPrivateKeyPath: os.Getenv("RS_GITHUB_APP_PRIVATE_KEY_PATH"),
 		GitHubSetupURL:       os.Getenv("RS_GITHUB_SETUP_URL"),
+		GitHubConnectorURL:   os.Getenv("RS_GITHUB_CONNECTOR_URL"),
+		GitHubConnectorToken: os.Getenv("RS_GITHUB_CONNECTOR_TOKEN"),
+		InstanceID:           envOrDefault("RS_INSTANCE_ID", "local"),
 		Version:              envOrDefault("RS_VERSION", "0.1.0"),
 	}
 }
