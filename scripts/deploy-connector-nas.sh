@@ -104,8 +104,12 @@ target="$2"
 mkdir -p "$target/var" "$target/key"
 # Do not preserve source owner/mode metadata on the Synology volume.
 cp -R "$stage"/. "$target"/
-chmod 600 "$target/.env" "$target/key/github-private-key.pem"
-chmod 700 "$target/var"
+# PHP-FPM runs as Synology's http user. Keep secrets out of the world while
+# allowing the selected Web Station profile to read them.
+chown root:http "$target/.env" "$target/key/github-private-key.pem"
+chmod 640 "$target/.env" "$target/key/github-private-key.pem"
+chown root:http "$target/var"
+chmod 770 "$target/var"
 rm -rf "$stage"
 '
 

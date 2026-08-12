@@ -9,7 +9,7 @@ Zion Connector este serviciul PHP public care păstrează cheia privată a GitHu
 - MariaDB 10.5+ sau MySQL 8;
 - Web Station cu backend Nginx, document root în `public/` și HTTPS;
 - o GitHub App publică, cu `Contents: Read-only` și `Metadata: Read-only`;
-- cheia PEM montată ca secret, cu permisiuni `0600`.
+- cheia PEM montată ca secret, cu permisiuni `0640` și grupul de runtime Web Station (`http` pe Synology).
 
 ```bash
 cd ZionConnector
@@ -62,7 +62,7 @@ RS_GITHUB_CONNECTOR_TOKEN=credential-returned-by-provisioning
 RS_PUBLIC_URL=https://nas.example.com
 ```
 
-Nu pune credentialul în Git și nu îl introduce în interfața utilizatorului final.
+Nu pune credentialul în Git și nu îl introduce în interfața utilizatorului final. Scriptul de deploy păstrează `.env` și cheia PEM ca `root:http`, `0640`: sunt inaccesibile public, dar pot fi citite de PHP-FPM.
 
 ## Contract HTTP
 
