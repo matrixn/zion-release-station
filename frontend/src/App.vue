@@ -71,6 +71,17 @@ type GithubRepository = {
 };
 type GithubInstallation = { github_installation_id: number; account_login: string; account_type: string; repository_selection: string; };
 
+type GithubState = {
+  configured: boolean;
+  mode: 'managed' | 'self_hosted' | string;
+  configuration_error: string;
+  connected: boolean;
+  app_slug: string;
+  setup_url: string;
+  account_login?: string;
+  installations: GithubInstallation[];
+};
+
 const healthState = ref<HealthState>('checking');
 const isDark = ref(true);
 const commandOpen = ref(false);
@@ -105,13 +116,19 @@ const wizardForm = ref({
   githubFullName: '',
   githubDefaultBranch: '',
 });
-const githubState = ref({ configured: false, configuration_error: '', connected: false, app_slug: '', setup_url: '', installations: [] as GithubInstallation[] });
+const githubState = ref<GithubState>({ configured: false, mode: 'self_hosted', configuration_error: '', connected: false, app_slug: '', setup_url: '', installations: [] });
 const githubRepositories = ref<GithubRepository[]>([]);
 const githubLoading = ref(false);
 const githubAccount = ref('');
 const githubSaving = ref(false);
 const githubMessage = ref('');
 const githubError = ref('');
+const githubConnectState = ref<'idle' | 'starting' | 'waiting'>('idle');
+let githubPollTimer: ReturnType<typeof setInterval> | undefined;
+
+function emptyGithubState(): GithubState {
+  return { configured: false, mode: 'self_hosted', configuration_error: 'GitHub connector API unavailable', connected: false, app_slug: '', setup_url: '', installations: [] };
+}
 
 const navItems = computed(() => [
   { label: 'Dashboard', icon: LayoutDashboard },
@@ -240,9 +257,10 @@ async function loadGithubStatus() {
     const response = await fetch('/releasestation/api/v1/integrations/github', { headers: { Accept: 'application/json' } });
     if (!response.ok) throw new Error('github');
     const payload = await response.json();
-    githubState.value = payload.data || { configured: false, configuration_error: '', connected: false, app_slug: '', setup_url: '', installations: [] };
+    githubState.value = payload.data || emptyGithubState();
+    if (githubState.value.connected && !githubRepositories.value.length) loadGithubRepositories();
   } catch {
-    githubState.value = { configured: false, configuration_error: 'GitHub connector API unavailable', connected: false, app_slug: '', setup_url: '', installations: [] };
+    githubState.value = emptyGithubState();
   }
 }
 
@@ -286,14 +304,41 @@ function onGithubRepositoryChange(event: Event) {
 async function installGithubApp() {
   githubError.value = '';
   githubMessage.value = '';
+  githubConnectState.value = 'starting';
   try {
     const response = await fetch('/releasestation/api/v1/integrations/github/install', { method: 'POST', headers: { Accept: 'application/json' } });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut porni instalarea GitHub App.');
-    window.location.href = payload.data.url;
+    const authWindow = window.open(payload.data.url, '_blank', 'noopener');
+    if (!authWindow) window.location.href = payload.data.url;
+    if (payload.data.mode === 'managed') {
+      githubConnectState.value = 'waiting';
+      startGithubStatusPolling();
+    } else {
+      githubConnectState.value = 'idle';
+    }
   } catch (error) {
+    githubConnectState.value = 'idle';
     githubError.value = error instanceof Error ? error.message : 'Nu am putut porni instalarea GitHub App.';
   }
+}
+
+function startGithubStatusPolling() {
+  if (githubPollTimer) clearInterval(githubPollTimer);
+  let attempts = 0;
+  githubPollTimer = setInterval(async () => {
+    attempts += 1;
+    await loadGithubStatus();
+    if (githubState.value.connected || attempts >= 120) {
+      if (githubPollTimer) clearInterval(githubPollTimer);
+      githubPollTimer = undefined;
+      githubConnectState.value = 'idle';
+      if (githubState.value.connected) {
+        githubMessage.value = 'GitHub a fost conectat. Repository-urile private permise sunt disponibile.';
+        loadGithubRepositories();
+      }
+    }
+  }, 5000);
 }
 
 function openWizard() {
@@ -400,7 +445,7 @@ async function disconnectGithub() {
   try {
     const response = await fetch('/releasestation/api/v1/integrations/github', { method: 'DELETE' });
     if (!response.ok) throw new Error('Nu am putut deconecta GitHub.');
-    githubState.value = { configured: false, configuration_error: 'GitHub connector API unavailable', connected: false, app_slug: '', setup_url: '', installations: [] };
+    githubState.value = emptyGithubState();
     githubAccount.value = '';
     githubMessage.value = 'Conexiunea GitHub a fost eliminată.';
   } catch (error) {
@@ -475,7 +520,10 @@ onMounted(() => {
   loadGithubStatus();
 });
 
-onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown));
+onBeforeUnmount(() => {
+  document.removeEventListener('keydown', onKeydown);
+  if (githubPollTimer) clearInterval(githubPollTimer);
+});
 </script>
 
 <template>
@@ -599,7 +647,16 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown));
           </article>
         </section>
 
-        <section v-if="activeNav === 'Dashboard'" class="connection-grid">
+        <section v-if="activeNav === 'Dashboard' && githubState.mode === 'managed'" class="connection-grid">
+          <article class="panel github-panel">
+            <div class="panel-heading"><div><div class="panel-kicker"><GitBranch :size="13" /> SOURCE CONTROL</div><h2>GitHub connection</h2></div><span class="connection-badge" :class="{ connected: githubState.connected }"><span class="status-dot" />{{ githubState.connected ? 'Connected' : 'Not connected' }}</span></div>
+            <p v-if="githubState.connected" class="connection-copy">GitHub este conectat prin connectorul Zion și poate accesa repository-urile private permise în GitHub{{ githubState.account_login ? ` pentru ${githubState.account_login}` : '' }}.</p>
+            <p v-else class="connection-copy">Conectează GitHub în câteva secunde. Vei fi trimis la GitHub să te autentifici și să instalezi aplicația Zion în contul sau organizația ta.</p>
+            <div class="connection-foot"><span class="muted-copy">{{ githubState.connected ? `${githubState.installations.length} installation${githubState.installations.length === 1 ? '' : 's'}` : (githubState.configuration_error || 'Ready to connect') }}</span><button class="button button-primary" type="button" @click="installGithubApp" :disabled="githubConnectState !== 'idle'">{{ githubConnectState === 'waiting' ? 'Waiting for GitHub…' : (githubState.connected ? 'Manage GitHub' : 'Connect GitHub') }} <ArrowUpRight :size="14" /></button></div>
+          </article>
+        </section>
+
+        <section v-if="activeNav === 'Dashboard' && githubState.mode !== 'managed'" class="connection-grid">
           <article class="panel github-panel">
             <div class="panel-heading"><div><div class="panel-kicker"><GitBranch :size="13" /> SOURCE CONTROL</div><h2>GitHub connection</h2></div><span class="connection-badge" :class="{ connected: githubState.connected }"><span class="status-dot" />{{ githubState.connected ? 'Connected' : 'Not connected' }}</span></div>
             <p v-if="githubState.connected" class="connection-copy">GitHub App este instalată și poate accesa <strong>{{ githubRepositories.length || 'repository-urile permise' }}</strong> repository-uri, inclusiv private. Alegerea se face per site în wizard.</p>
@@ -638,7 +695,15 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown));
 
         <section v-if="activeNav === 'Settings'" class="settings-view">
           <div class="sites-management-header"><div><div class="eyebrow"><span class="eyebrow-pulse" /> WORKSPACE SETTINGS</div><h1>Settings.</h1><p class="hero-copy">Connect the services ReleaseStation uses to discover repositories and deploy sites.</p></div></div>
-          <article class="panel settings-card">
+          <article v-if="githubState.mode === 'managed'" class="panel settings-card">
+            <div class="settings-card-heading"><span class="settings-icon"><GitBranch :size="18" /></span><div><div class="panel-kicker">SOURCE CONTROL CONNECTOR</div><h2>GitHub</h2><p>Conectează GitHub fără să creezi o aplicație proprie și fără să încarci cheia PEM pe NAS.</p></div><span class="connection-badge" :class="{ connected: githubState.connected }"><span class="status-dot" />{{ githubState.connected ? 'Connected' : 'Not connected' }}</span></div>
+            <div class="settings-form"><div class="connector-status"><span class="status-dot" :class="{ 'status-dot-warning': !githubState.connected }" /><strong>{{ githubState.connected ? 'GitHub connected through Zion' : 'Connect GitHub to continue' }}</strong><small v-if="githubState.account_login">Account: {{ githubState.account_login }}</small><small v-else-if="githubState.configuration_error">{{ githubState.configuration_error }}</small></div><p class="settings-explanation">Apasă butonul, autentifică-te pe GitHub și instalează aplicația Zion în contul sau organizația ta. Selectezi exact repository-urile private accesibile. Cheia GitHub App rămâne în serviciul Zion, nu pe NAS.</p></div>
+            <div v-if="githubError" class="discovery-error"><CircleAlert :size="16" />{{ githubError }}</div><div v-if="githubMessage" class="discovery-success"><Check :size="16" />{{ githubMessage }}</div>
+            <div class="settings-actions"><span /><button class="button button-secondary" type="button" @click="loadGithubStatus">Refresh status</button><button class="button button-primary" type="button" @click="installGithubApp" :disabled="githubConnectState !== 'idle'">{{ githubConnectState === 'waiting' ? 'Waiting for GitHub…' : (githubState.connected ? 'Manage GitHub' : 'Connect GitHub') }} <ArrowUpRight :size="14" /></button></div>
+            <div class="settings-note"><CircleHelp :size="15" /><span>Acesta este modul recomandat pentru clienții ReleaseStation: o singură Zion GitHub App, instalată separat în contul fiecărui client. Nu este nevoie de App ID, slug sau fișier PEM pe NAS.</span></div>
+            <div v-if="githubState.installations.length" class="installation-list"><div v-for="installation in githubState.installations" :key="installation.github_installation_id" class="installation-row"><GitBranch :size="15" /><span><strong>{{ installation.account_login }}</strong><small>{{ installation.account_type }} · {{ installation.repository_selection }} repositories · installation {{ installation.github_installation_id }}</small></span><button class="button button-secondary" type="button" @click="loadGithubRepositories">Refresh repositories</button></div></div>
+          </article>
+          <article v-if="githubState.mode !== 'managed'" class="panel settings-card">
             <div class="settings-card-heading"><span class="settings-icon"><GitBranch :size="18" /></span><div><div class="panel-kicker">SOURCE CONTROL CONNECTOR</div><h2>GitHub App</h2><p>Instalează App-ul GitHub și selectează explicit unul sau mai multe repository-uri, inclusiv private.</p></div><span class="connection-badge" :class="{ connected: githubState.connected }"><span class="status-dot" />{{ githubState.connected ? 'Connected' : 'Not connected' }}</span></div>
             <div class="settings-form"><div class="connector-status"><span class="status-dot" :class="{ 'status-dot-warning': !githubState.configured }" /><strong>{{ githubState.configured ? 'App credentials detected on NAS' : 'App credentials are not configured' }}</strong><small v-if="githubState.configuration_error">{{ githubState.configuration_error }}</small><small v-else>App: {{ githubState.app_slug }}</small></div><p class="settings-explanation">Private repository access is granted in GitHub during installation. ReleaseStation receives only short-lived installation tokens and never stores a PAT.</p></div>
             <div v-if="githubError" class="discovery-error"><CircleAlert :size="16" />{{ githubError }}</div><div v-if="githubMessage" class="discovery-success"><Check :size="16" />{{ githubMessage }}</div>

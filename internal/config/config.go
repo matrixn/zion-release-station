@@ -18,6 +18,7 @@ type Config struct {
 	GitHubConnectorURL   string
 	GitHubConnectorToken string
 	InstanceID           string
+	PublicURL            string
 	Version              string
 }
 
@@ -34,6 +35,7 @@ func Load() Config {
 		GitHubConnectorURL:   os.Getenv("RS_GITHUB_CONNECTOR_URL"),
 		GitHubConnectorToken: os.Getenv("RS_GITHUB_CONNECTOR_TOKEN"),
 		InstanceID:           envOrDefault("RS_INSTANCE_ID", "local"),
+		PublicURL:            os.Getenv("RS_PUBLIC_URL"),
 		Version:              envOrDefault("RS_VERSION", "0.1.0"),
 	}
 }

@@ -281,6 +281,11 @@ func (s *Server) handleGitHubInstall(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) publicReturnURL(r *http.Request) string {
+	if configured := strings.TrimRight(strings.TrimSpace(s.config.PublicURL), "/"); configured != "" {
+		if parsed, err := url.Parse(configured); err == nil && parsed.Scheme == "https" && parsed.Hostname() != "" {
+			return configured + "/releasestation/?github=connected"
+		}
+	}
 	proto := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
 	if proto != "https" {
 		proto = "https"

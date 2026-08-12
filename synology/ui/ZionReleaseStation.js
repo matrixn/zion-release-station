@@ -84,7 +84,15 @@
     '            </div>',
     '            <div v-else class="zion-native-note">The /releasestation/ web route is disabled. Related URL and service settings are hidden.</div>',
     '          </article>',
-    '          <article class="zion-native-card zion-native-github-settings">',
+    '          <article v-if="github.mode === \'managed\'" class="zion-native-card zion-native-github-settings">',
+    '            <h2>Connect GitHub</h2>',
+    '            <p>Conectează GitHub prin aplicația Zion fără să creezi o GitHub App proprie și fără să încarci o cheie PEM pe NAS.</p>',
+    '            <div class="zion-native-status"><span class="zion-native-dot" :class="github.connected ? \'healthy\' : \'warning\'"></span>{{ github.connected ? \'GitHub connected through Zion\' : \'GitHub is not connected\' }}</div>',
+    '            <p v-if="github.account_login">Account: {{ github.account_login }}</p>',
+    '            <div class="zion-native-actions"><button class="zion-native-button primary" type="button" @click="installGithubApp">{{ github.connected ? \'Manage GitHub\' : \'Connect GitHub\' }} ↗</button><button class="zion-native-button" type="button" @click="loadGithub">Refresh</button></div>',
+    '            <div class="zion-native-note">Pașii se deschid în GitHub: autentificare, alegerea contului/organizației și selectarea repository-urilor private. Cheia aplicației rămâne în serviciul Zion.</div>',
+    '          </article>',
+    '          <article v-if="github.mode !== \'managed\'" class="zion-native-card zion-native-github-settings">',
     '            <h2>GitHub App connector</h2>',
     '            <p>Configurează aici App-ul GitHub pentru acces la repository-uri private. Nu introduci PAT; ReleaseStation folosește tokenuri temporare de instalare.</p>',
     '            <form class="zion-native-form" @submit.prevent="saveGithubConfig">',
@@ -135,6 +143,13 @@
         return '';
       },
       githubChecks: function () {
+        if (this.github.mode === 'managed') {
+          return [
+            { label: 'Zion managed connector available', ok: Boolean(this.github.configured) },
+            { label: 'GitHub authorization complete', ok: Boolean(this.github.connected) },
+            { label: 'Private repositories available', ok: Boolean(this.github.connected) }
+          ];
+        }
         return [
           { label: 'App credentials configured', ok: Boolean(this.github.configured) },
           { label: 'Private key uploaded', ok: Boolean(this.github.private_key_configured) },

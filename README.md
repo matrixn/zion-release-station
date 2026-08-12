@@ -39,9 +39,24 @@ MVP-ul trebuie să includă:
 - detectarea framework-ului și a document root-ului;
 - deploy manual și deploy prin webhook GitHub/GitLab;
 
-### GitHub App connector pentru repository-uri private
+### GitHub connector managed pentru clienți
 
-ReleaseStation folosește GitHub App Installation pentru repository-uri private. Administratorul configurează cheia privată a App-ului pe NAS, apasă **Install / manage GitHub App** în Settings și selectează explicit repository-urile permise în GitHub. Repository-urile și branch-urile disponibile apar apoi în wizard-ul de site.
+Fluxul recomandat pentru produsul livrat este connectorul Zion managed. Clientul apasă **Connect GitHub** în aplicația nativă, se autentifică în GitHub, instalează aplicația Zion în contul sau organizația sa și selectează explicit repository-urile permise. Clientul nu creează o GitHub App proprie și nu încarcă o cheie `.pem` pe NAS.
+
+SPK-ul comunică prin HTTPS cu serviciul connector Zion. Cheia privată a aplicației GitHub rămâne exclusiv în serviciul Zion; NAS-ul primește doar metadata și credențiale temporare necesare pentru operațiile autorizate. Provisionarea este făcută de serviciul de licențiere/connector, nu din interfața utilizatorului:
+
+```env
+RS_INSTANCE_ID=instance-issued-by-zion
+RS_GITHUB_CONNECTOR_URL=https://connect.example.com
+RS_GITHUB_CONNECTOR_TOKEN=provisioned-instance-credential
+RS_PUBLIC_URL=https://nas.example.com
+```
+
+Connectorul managed folosește endpoint-urile `/v1/instances/{instance_id}/github/sessions`, `/status`, `/repositories` și `/repositories/{owner}/{repo}/branches`. Dacă aceste variabile nu sunt provisionate, ReleaseStation păstrează modul self-hosted avansat.
+
+### GitHub App self-hosted pentru instalări offline
+
+ReleaseStation păstrează și modul self-hosted pentru instalări fără serviciul Zion. Administratorul configurează cheia privată a App-ului pe NAS, apasă **Install / manage GitHub App** în Settings și selectează explicit repository-urile permise în GitHub. Repository-urile și branch-urile disponibile apar apoi în wizard-ul de site.
 
 Serviciul nu păstrează PAT-uri și nu expune installation token-ul prin API. Tokenul temporar este folosit pentru citirea repository-urilor și expiră automat. Configurația runtime se pune în `/var/packages/zion-releasestation/var/config.env`, cu permisiuni `0600`:
 
