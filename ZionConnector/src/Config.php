@@ -121,7 +121,15 @@ final readonly class Config
         if ($expected !== '' && $host !== $expected) {
             return false;
         }
-        return $this->returnHosts === [] || in_array($host, array_map('strtolower', $this->returnHosts), true);
+        if ($this->returnHosts === []) {
+            return true;
+        }
+        $allowedHosts = array_map(static function (string $value): string {
+            $value = strtolower(trim($value));
+            $parsed = parse_url($value);
+            return is_array($parsed) && isset($parsed['host']) ? strtolower((string) $parsed['host']) : $value;
+        }, $this->returnHosts);
+        return in_array($host, $allowedHosts, true);
     }
 
     /** @return list<string> */

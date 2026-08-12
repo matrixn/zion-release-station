@@ -42,4 +42,12 @@ final class ConfigTest extends TestCase
 
         self::assertSame('mysql:host=mariadb.internal;port=3307;dbname=connector;charset=utf8mb4', $config->databaseDsn());
     }
+
+    public function testReturnHostConfigurationAcceptsAnHttpsUrl(): void
+    {
+        putenv('CONNECTOR_RETURN_HOSTS=https://nas.example.com');
+        $config = Config::fromEnvironment();
+
+        self::assertTrue($config->isAllowedReturnUrl('https://nas.example.com/webman/3rdparty/zion-releasestation/index.html', 'nas.example.com'));
+    }
 }
