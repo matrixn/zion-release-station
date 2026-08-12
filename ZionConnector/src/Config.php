@@ -66,6 +66,11 @@ final readonly class Config
         return $this->publicBaseUrl . '/github/callback';
     }
 
+    public function pairingCredential(string $instanceId, string $state): string
+    {
+        return hash_hmac('sha256', 'pairing|' . $instanceId . '|' . $state, $this->adminToken);
+    }
+
     public function databaseDsn(): string
     {
         if ($this->databaseDriver === 'sqlite') {

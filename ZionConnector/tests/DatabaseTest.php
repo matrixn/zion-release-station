@@ -34,4 +34,26 @@ final class DatabaseTest extends TestCase
         self::assertNotNull($database->consumeSession(hash('sha256', 'state')));
         self::assertNull($database->consumeSession(hash('sha256', 'state')));
     }
+
+    public function testPairingSessionIsAuthorizedAndConsumedOnce(): void
+    {
+        $database = new Database($this->path);
+        $database->migrate();
+        $stateHash = hash('sha256', 'pairing-state');
+        $database->createPairingSession(
+            'pairing-001',
+            'nas-002',
+            $stateHash,
+            'https://nas.example.com/releasestation/?github=connected',
+            gmdate('c', time() + 600),
+        );
+
+        self::assertSame('pending', $database->findPairingSession($stateHash)['status']);
+        $database->authorizePairingSession('pairing-001', 123456);
+        $session = $database->consumePairingSession('nas-002', $stateHash);
+
+        self::assertNotNull($session);
+        self::assertSame(123456, (int) $session['github_installation_id']);
+        self::assertNull($database->consumePairingSession('nas-002', $stateHash));
+    }
 }

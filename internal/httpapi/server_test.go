@@ -233,6 +233,42 @@ func TestManagedGitHubConnectorStartsSessionAndReportsConnection(t *testing.T) {
 	}
 }
 
+func TestGitHubConnectorStartsPairingWithoutProvisionedCredential(t *testing.T) {
+	connector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("Authorization"); got != "" {
+			t.Fatalf("pairing endpoint must not receive an instance credential, got %q", got)
+		}
+		if r.Method != http.MethodPost || r.URL.Path != "/pairing/sessions" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"rs_test","authorize_url":"https://github.com/apps/zion/installations/new?state=test","expires_in":600}`)
+	}))
+	defer connector.Close()
+
+	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(config.Config{
+		WebRoot:            t.TempDir(),
+		DataDir:            t.TempDir(),
+		Version:            "0.1.0-test",
+		GitHubConnectorURL: connector.URL,
+		InstanceID:         "rs_test",
+	}, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/releasestation/api/v1/integrations/github/install", nil)
+	server.http.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"mode":"pairing"`) || !strings.Contains(recorder.Body.String(), `"session_id":"rs_test"`) {
+		t.Fatalf("unexpected pairing install response: %d %q", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestManualSiteAPIAutoDetectsFrameworkAndSavesRepository(t *testing.T) {
 	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
 	if err != nil {

@@ -210,7 +210,8 @@
       },
       loadGithub: function () {
         var self = this;
-        fetch('/releasestation/api/v1/integrations/github', { headers: { Accept: 'application/json' } })
+        self.completeGithubPairing()
+          .then(function () { return fetch('/releasestation/api/v1/integrations/github', { headers: { Accept: 'application/json' } }); })
           .then(function (response) { if (!response.ok) throw new Error('github'); return response.json(); })
           .then(function (payload) {
             self.github = payload.data || {};
@@ -218,6 +219,19 @@
             self.githubConfigState = 'saved';
           })
           .catch(function () { self.github = { mode: 'managed', configured: false, connected: false, installations: [], configuration_error: 'Zion Connector is not provisioned for this ReleaseStation instance' }; self.githubConfigState = 'error'; self.githubMessage = 'Zion Connector nu este provisionat pentru această instanță.'; });
+      },
+      completeGithubPairing: function () {
+        var pairingCode = new URLSearchParams(window.location.search).get('pairing_code');
+        if (!pairingCode) return Promise.resolve();
+        var self = this;
+        return fetch('/releasestation/api/v1/integrations/github/complete', { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ pairing_code: pairingCode }) })
+          .then(function (response) { return response.json().then(function (payload) { if (!response.ok) throw new Error((payload.error && payload.error.message) || 'Nu am putut finaliza conectarea Zion.'); }); })
+          .then(function () {
+            var url = new URL(window.location.href);
+            url.searchParams.delete('pairing_code');
+            window.history.replaceState({}, document.title, url.toString());
+            self.githubMessage = 'GitHub a fost conectat prin Zion. Repository-urile permise sunt disponibile.';
+          });
       },
       saveGithubConfig: function () {
         var self = this;

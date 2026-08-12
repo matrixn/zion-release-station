@@ -38,6 +38,14 @@ final class HttpApp
                 $this->provisionInstance();
                 return;
             }
+            if ($method === 'POST' && $path === '/pairing/sessions') {
+                $this->pairingSession();
+                return;
+            }
+            if ($method === 'POST' && $path === '/pairing/exchange') {
+                $this->exchangePairing();
+                return;
+            }
             if ($method === 'GET' && $path === '/github/callback') {
                 $this->callback();
                 return;
@@ -105,6 +113,57 @@ final class HttpApp
         $this->json(201, ['data' => $instance + ['credential' => $credential]]);
     }
 
+    private function pairingSession(): void
+    {
+        if (!$this->config->githubConfigured()) {
+            $this->json(503, ['error' => ['code' => 'GITHUB_NOT_CONFIGURED', 'message' => $this->config->githubConfigurationError()]]);
+            return;
+        }
+        $body = $this->requestBody();
+        $instanceId = trim((string) ($body['instance_id'] ?? ''));
+        $returnUrl = trim((string) ($body['return_url'] ?? ''));
+        $parsed = parse_url($returnUrl);
+        $returnHost = is_array($parsed) ? strtolower((string) ($parsed['host'] ?? '')) : '';
+        if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{1,127}$/', $instanceId) || $returnHost === '' || !$this->config->isAllowedReturnUrl($returnUrl, $returnHost)) {
+            $this->json(422, ['error' => ['code' => 'INVALID_PAIRING', 'message' => 'The ReleaseStation instance and HTTPS return URL are invalid.']]);
+            return;
+        }
+        if ($this->database->findInstance($instanceId) !== null) {
+            $this->json(409, ['error' => ['code' => 'INSTANCE_EXISTS', 'message' => 'This ReleaseStation instance is already paired.']]);
+            return;
+        }
+        $state = self::randomToken(32);
+        $this->database->createPairingSession(
+            self::randomToken(18),
+            $instanceId,
+            hash('sha256', $state),
+            $returnUrl,
+            gmdate('c', time() + 600),
+        );
+        $this->json(200, [
+            'id' => $instanceId,
+            'authorize_url' => $this->github->authorizationUrl($state),
+            'expires_in' => 600,
+        ]);
+    }
+
+    private function exchangePairing(): void
+    {
+        $body = $this->requestBody();
+        $instanceId = trim((string) ($body['instance_id'] ?? ''));
+        $pairingCode = trim((string) ($body['pairing_code'] ?? ''));
+        if ($instanceId === '' || $pairingCode === '') {
+            $this->json(422, ['error' => ['code' => 'INVALID_PAIRING', 'message' => 'The pairing code is required.']]);
+            return;
+        }
+        $session = $this->database->consumePairingSession($instanceId, hash('sha256', $pairingCode));
+        if ($session === null || $this->database->findInstance($instanceId) === null) {
+            $this->json(401, ['error' => ['code' => 'INVALID_PAIRING', 'message' => 'The pairing code is invalid or expired.']]);
+            return;
+        }
+        $this->json(200, ['credential' => $this->config->pairingCredential($instanceId, $pairingCode)]);
+    }
+
     /** @param array<string,mixed> $instance */
     private function startSession(array $instance): void
     {
@@ -143,7 +202,9 @@ final class HttpApp
             $this->json(400, ['error' => ['code' => 'INVALID_CALLBACK', 'message' => 'GitHub callback parameters are incomplete.']]);
             return;
         }
-        $session = $this->database->consumeSession(hash('sha256', $state));
+        $stateHash = hash('sha256', $state);
+        $pairingSession = $this->database->findPairingSession($stateHash);
+        $session = $pairingSession ?? $this->database->consumeSession($stateHash);
         if ($session === null) {
             $this->json(400, ['error' => ['code' => 'INVALID_STATE', 'message' => 'The GitHub connection state is invalid or expired.']]);
             return;
@@ -160,15 +221,26 @@ final class HttpApp
         }
         $appInstallation = $this->github->appInstallation($installationId);
         $account = is_array($appInstallation['account'] ?? null) ? $appInstallation['account'] : [];
+        $instanceId = (string) $session['instance_id'];
+        $isPairing = $pairingSession !== null;
+        if ($isPairing && $this->database->findInstance($instanceId) === null) {
+            $credential = $this->config->pairingCredential($instanceId, $state);
+            $this->database->createInstance($instanceId, null, hash('sha256', $credential), (string) parse_url((string) $session['return_url'], PHP_URL_HOST));
+        }
         $this->database->saveInstallation([
             'id' => self::randomToken(18),
-            'instance_id' => $session['instance_id'],
+            'instance_id' => $instanceId,
             'github_installation_id' => $installationId,
             'account_login' => (string) ($account['login'] ?? $userInstallation['account']['login'] ?? 'unknown'),
             'account_type' => (string) ($account['type'] ?? 'User'),
             'repository_selection' => (string) ($appInstallation['repository_selection'] ?? 'selected'),
             'permissions' => is_array($appInstallation['permissions'] ?? null) ? $appInstallation['permissions'] : [],
         ]);
+        if ($isPairing) {
+            $this->database->authorizePairingSession((string) $session['id'], $installationId);
+            header('Location: ' . $this->withQuery((string) $session['return_url'], ['github' => 'connected', 'pairing_code' => $state]), true, 303);
+            return;
+        }
         header('Location: ' . $session['return_url'], true, 303);
     }
 
@@ -259,6 +331,13 @@ final class HttpApp
     {
         $header = trim((string) ($_SERVER['HTTP_AUTHORIZATION'] ?? ''));
         return preg_match('/^Bearer\s+(.+)$/i', $header, $matches) === 1 ? trim($matches[1]) : '';
+    }
+
+    /** @param array<string,string> $parameters */
+    private function withQuery(string $url, array $parameters): string
+    {
+        $separator = str_contains($url, '?') ? '&' : '?';
+        return $url . $separator . http_build_query($parameters, '', '&', PHP_QUERY_RFC3986);
     }
 
     /** @param array<string,mixed> $payload */

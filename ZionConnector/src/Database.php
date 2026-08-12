@@ -68,6 +68,20 @@ final class Database
             );
             CREATE INDEX IF NOT EXISTS idx_sessions_instance_status ON github_connect_sessions(instance_id, status);
             CREATE INDEX IF NOT EXISTS idx_sessions_expires_at ON github_connect_sessions(expires_at);
+            CREATE TABLE IF NOT EXISTS connector_pairing_sessions (
+                id TEXT PRIMARY KEY,
+                instance_id TEXT NOT NULL,
+                state_hash TEXT UNIQUE NOT NULL,
+                return_url TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'pending',
+                expires_at TEXT NOT NULL,
+                github_installation_id INTEGER NULL,
+                created_at TEXT NOT NULL,
+                authorized_at TEXT NULL,
+                completed_at TEXT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_pairing_instance_status ON connector_pairing_sessions(instance_id, status);
+            CREATE INDEX IF NOT EXISTS idx_pairing_expires_at ON connector_pairing_sessions(expires_at);
             CREATE TABLE IF NOT EXISTS github_installations (
                 id TEXT PRIMARY KEY,
                 instance_id TEXT NOT NULL REFERENCES connector_instances(id) ON DELETE CASCADE,
@@ -111,6 +125,20 @@ final class Database
                 CONSTRAINT fk_sessions_instance FOREIGN KEY (instance_id) REFERENCES connector_instances(id) ON DELETE CASCADE,
                 INDEX idx_sessions_instance_status (instance_id, status),
                 INDEX idx_sessions_expires_at (expires_at)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            CREATE TABLE IF NOT EXISTS connector_pairing_sessions (
+                id VARCHAR(128) PRIMARY KEY,
+                instance_id VARCHAR(128) NOT NULL,
+                state_hash CHAR(64) UNIQUE NOT NULL,
+                return_url VARCHAR(2048) NOT NULL,
+                status VARCHAR(32) NOT NULL DEFAULT 'pending',
+                expires_at VARCHAR(32) NOT NULL,
+                github_installation_id BIGINT NULL,
+                created_at VARCHAR(32) NOT NULL,
+                authorized_at VARCHAR(32) NULL,
+                completed_at VARCHAR(32) NULL,
+                INDEX idx_pairing_instance_status (instance_id, status),
+                INDEX idx_pairing_expires_at (expires_at)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
             CREATE TABLE IF NOT EXISTS github_installations (
                 id VARCHAR(128) PRIMARY KEY,
@@ -178,6 +206,71 @@ final class Database
             'expires_at' => $expiresAt,
             'created_at' => gmdate('c'),
         ]);
+    }
+
+    public function createPairingSession(string $id, string $instanceId, string $stateHash, string $returnUrl, string $expiresAt): void
+    {
+        $statement = $this->pdo->prepare(<<<'SQL'
+            INSERT INTO connector_pairing_sessions (id, instance_id, state_hash, return_url, expires_at, created_at)
+            VALUES (:id, :instance_id, :state_hash, :return_url, :expires_at, :created_at)
+        SQL);
+        $statement->execute([
+            'id' => $id,
+            'instance_id' => $instanceId,
+            'state_hash' => $stateHash,
+            'return_url' => $returnUrl,
+            'expires_at' => $expiresAt,
+            'created_at' => gmdate('c'),
+        ]);
+    }
+
+    /** @return array<string,mixed>|null */
+    public function findPairingSession(string $stateHash, string $status = 'pending'): ?array
+    {
+        $statement = $this->pdo->prepare('SELECT * FROM connector_pairing_sessions WHERE state_hash = :state_hash AND status = :status AND expires_at > :now LIMIT 1');
+        $statement->execute(['state_hash' => $stateHash, 'status' => $status, 'now' => gmdate('c')]);
+        $row = $statement->fetch();
+        return is_array($row) ? $row : null;
+    }
+
+    public function authorizePairingSession(string $id, int $installationId): void
+    {
+        $statement = $this->pdo->prepare('UPDATE connector_pairing_sessions SET status = \'authorized\', github_installation_id = :installation_id, authorized_at = :authorized_at WHERE id = :id AND status = \'pending\'');
+        $statement->execute([
+            'installation_id' => $installationId,
+            'authorized_at' => gmdate('c'),
+            'id' => $id,
+        ]);
+        if ($statement->rowCount() !== 1) {
+            throw new RuntimeException('The connector pairing session is no longer pending.');
+        }
+    }
+
+    /** @return array<string,mixed>|null */
+    public function consumePairingSession(string $instanceId, string $stateHash): ?array
+    {
+        $this->pdo->beginTransaction();
+        try {
+            $forUpdate = $this->mysql ? ' FOR UPDATE' : '';
+            $statement = $this->pdo->prepare(<<<SQL
+                SELECT * FROM connector_pairing_sessions
+                WHERE instance_id = :instance_id AND state_hash = :state_hash AND status = 'authorized' AND expires_at > :now
+                LIMIT 1{$forUpdate}
+            SQL);
+            $statement->execute(['instance_id' => $instanceId, 'state_hash' => $stateHash, 'now' => gmdate('c')]);
+            $session = $statement->fetch();
+            if (!is_array($session)) {
+                $this->pdo->commit();
+                return null;
+            }
+            $update = $this->pdo->prepare('UPDATE connector_pairing_sessions SET status = \'completed\', completed_at = :completed_at WHERE id = :id');
+            $update->execute(['completed_at' => gmdate('c'), 'id' => $session['id']]);
+            $this->pdo->commit();
+            return $session;
+        } catch (\Throwable $exception) {
+            $this->pdo->rollBack();
+            throw $exception;
+        }
     }
 
     /** @return array<string,mixed>|null */

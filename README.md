@@ -64,6 +64,17 @@ Serviciul nu păstrează PAT-uri și nu expune installation token-ul prin API. T
 - management de environment/secrets fără returnarea valorilor salvate în API;
 - build reproductibil `.spk`, validare și artefacte de release.
 
+### Pairing GitHub pentru pachetul livrat
+
+În pachetul livrat clientului este necesar doar URL-ul public al connectorului. La prima apăsare pe **Connect GitHub**, ReleaseStation generează automat un `instance_id`, deschide pairing-ul public și primește credentialul numai după autorizarea aplicației Zion în GitHub.
+
+Credentialul este salvat în directorul runtime DSM (`connector.json`, mod `0600`), nu în SPK și nu în setările editabile din UI. Cheia `.pem`, App ID-ul, client secret-ul și installation token-urile rămân exclusiv în connectorul Zion.
+
+```env
+RS_GITHUB_CONNECTOR_URL=https://connect.example.com
+RS_PUBLIC_URL=https://nas.example.com
+```
+
 ### Fluxul unui deployment
 
 ```text

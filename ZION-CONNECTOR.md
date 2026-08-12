@@ -37,6 +37,17 @@ RS_PUBLIC_URL=https://nas.example.com
 
 Dacă variabilele managed lipsesc, butonul rămâne vizibil, dar acțiunea va indica faptul că instanța nu este încă provisionată de serviciul Zion. Nu există fallback local cu App ID sau `.pem`.
 
+## Pairing automat pentru clienții ReleaseStation
+
+SPK-ul comercial nu primește App ID, client secret, `.pem` sau PAT. El cunoaște doar URL-ul connectorului, de exemplu `https://connect.example.com`.
+
+1. ReleaseStation apelează `POST /pairing/sessions` fără credential și trimite `instance_id` plus URL-ul HTTPS de revenire.
+2. Connectorul creează o sesiune de 10 minute și trimite utilizatorul la instalarea aplicației Zion în GitHub.
+3. Callback-ul verifică OAuth-ul, utilizatorul și installation-ul GitHub, apoi revine în aplicație cu un cod de pairing de unică folosință.
+4. ReleaseStation schimbă acel cod prin `POST /pairing/exchange` și salvează credentialul primit în `/var/packages/zion-releasestation/var/connector.json` cu `0600`.
+
+Pentru development sau provisioning controlat pot fi setate explicit `RS_INSTANCE_ID` și `RS_GITHUB_CONNECTOR_TOKEN`, dar acestea nu trebuie livrate clienților. În fluxul comercial nu există configurare locală cu App ID sau `.pem`.
+
 ## Contractul HTTP obligatoriu
 
 Toate endpoint-urile interne folosesc:

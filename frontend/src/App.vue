@@ -125,6 +125,7 @@ const githubMessage = ref('');
 const githubError = ref('');
 const githubConnectState = ref<'idle' | 'starting' | 'waiting'>('idle');
 let githubPollTimer: ReturnType<typeof setInterval> | undefined;
+let githubPairingHandled = false;
 
 function emptyGithubState(): GithubState {
   return { configured: false, mode: 'managed', configuration_error: 'Zion Connector is not provisioned for this ReleaseStation instance', connected: false, app_slug: '', setup_url: '', installations: [] };
@@ -253,6 +254,7 @@ async function loadWebStationStatus() {
 }
 
 async function loadGithubStatus() {
+  if (!githubPairingHandled) await completeGithubPairingFromUrl();
   try {
     const response = await fetch('/releasestation/api/v1/integrations/github', { headers: { Accept: 'application/json' } });
     if (!response.ok) throw new Error('github');
@@ -261,6 +263,27 @@ async function loadGithubStatus() {
     if (githubState.value.connected && !githubRepositories.value.length) loadGithubRepositories();
   } catch {
     githubState.value = emptyGithubState();
+  }
+}
+
+async function completeGithubPairingFromUrl() {
+  const url = new URL(window.location.href);
+  const pairingCode = url.searchParams.get('pairing_code');
+  if (!pairingCode || githubPairingHandled) return;
+  githubPairingHandled = true;
+  try {
+    const response = await fetch('/releasestation/api/v1/integrations/github/complete', {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pairing_code: pairingCode }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut finaliza conectarea Zion.');
+    url.searchParams.delete('pairing_code');
+    window.history.replaceState({}, document.title, url.toString());
+    githubMessage.value = 'GitHub a fost conectat prin Zion. Repository-urile permise sunt disponibile.';
+  } catch (error) {
+    githubError.value = error instanceof Error ? error.message : 'Nu am putut finaliza conectarea Zion.';
   }
 }
 
@@ -311,7 +334,7 @@ async function installGithubApp() {
     if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut porni instalarea GitHub App.');
     const authWindow = window.open(payload.data.url, '_blank', 'noopener');
     if (!authWindow) window.location.href = payload.data.url;
-    if (payload.data.mode === 'managed') {
+    if (payload.data.mode === 'managed' || payload.data.mode === 'pairing') {
       githubConnectState.value = 'waiting';
       startGithubStatusPolling();
     } else {

@@ -40,6 +40,7 @@ start_service() {
     fi
     install -d -m 700 "$PKG_VAR/runtime" "$PKG_VAR/logs"
     RS_DATA_DIR="$PKG_VAR" RS_WEB_ROOT="$PKG_DEST/web" RS_VERSION="${RS_VERSION:-0.1.0}" \
+        RS_GITHUB_CONNECTOR_URL="${RS_GITHUB_CONNECTOR_URL:-https://connector.raduta.synology.me}" \
         "$BIN" >>"$LOG_FILE" 2>&1 &
     echo $! >"$PID_FILE"
     i=0
