@@ -7,20 +7,28 @@ import (
 )
 
 type Config struct {
-	BindAddress     string
-	DataDir         string
-	WebRoot         string
-	WebStationRoots []string
-	Version         string
+	BindAddress          string
+	DataDir              string
+	WebRoot              string
+	WebStationRoots      []string
+	GitHubAppID          string
+	GitHubAppSlug        string
+	GitHubPrivateKeyPath string
+	GitHubSetupURL       string
+	Version              string
 }
 
 func Load() Config {
 	return Config{
-		BindAddress:     envOrDefault("RS_BIND_ADDRESS", "127.0.0.1:24871"),
-		DataDir:         envOrDefault("RS_DATA_DIR", "./var"),
-		WebRoot:         envOrDefault("RS_WEB_ROOT", "./web"),
-		WebStationRoots: envListOrDefault("RS_WEB_STATION_ROOTS", []string{"/volume1/www", "/volume1/web"}),
-		Version:         envOrDefault("RS_VERSION", "0.1.0"),
+		BindAddress:          envOrDefault("RS_BIND_ADDRESS", "127.0.0.1:24871"),
+		DataDir:              envOrDefault("RS_DATA_DIR", "./var"),
+		WebRoot:              envOrDefault("RS_WEB_ROOT", "./web"),
+		WebStationRoots:      envListOrDefault("RS_WEB_STATION_ROOTS", []string{"/volume1/www", "/volume1/web"}),
+		GitHubAppID:          os.Getenv("RS_GITHUB_APP_ID"),
+		GitHubAppSlug:        os.Getenv("RS_GITHUB_APP_SLUG"),
+		GitHubPrivateKeyPath: os.Getenv("RS_GITHUB_APP_PRIVATE_KEY_PATH"),
+		GitHubSetupURL:       os.Getenv("RS_GITHUB_SETUP_URL"),
+		Version:              envOrDefault("RS_VERSION", "0.1.0"),
 	}
 }
 

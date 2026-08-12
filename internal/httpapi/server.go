@@ -13,33 +13,37 @@ import (
 
 	"github.com/matrixn/zion-release-station/internal/config"
 	"github.com/matrixn/zion-release-station/internal/detection"
+	"github.com/matrixn/zion-release-station/internal/githubapp"
 	"github.com/matrixn/zion-release-station/internal/sites"
 	"github.com/matrixn/zion-release-station/internal/webstation"
 )
 
 type Server struct {
-	config     config.Config
-	db         *sql.DB
-	logger     *slog.Logger
-	http       *http.Server
-	sites      *sites.Store
-	webStation webstation.WebStationAdapter
+	config      config.Config
+	db          *sql.DB
+	logger      *slog.Logger
+	http        *http.Server
+	sites       *sites.Store
+	webStation  webstation.WebStationAdapter
+	github      *githubapp.Client
+	githubStore *githubapp.Store
 }
 
 const webAccessSettingKey = "web_access_enabled"
 
 func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 	server := &Server{
-		config:     cfg,
-		db:         db,
-		logger:     logger,
-		sites:      sites.NewStore(db),
-		webStation: webstation.NewFilesystemAdapter(cfg.WebStationRoots, detection.Registry{}),
+		config:      cfg,
+		db:          db,
+		logger:      logger,
+		sites:       sites.NewStore(db),
+		webStation:  webstation.NewFilesystemAdapter(cfg.WebStationRoots, detection.Registry{}),
+		github:      githubapp.NewClient(cfg),
+		githubStore: githubapp.NewStore(db),
 	}
 	if _, err := db.Exec(`INSERT OR IGNORE INTO settings(key, value_json, updated_at) VALUES (?, 'true', datetime('now'))`, webAccessSettingKey); err != nil {
 		logger.Error("initialize web access setting", "error", err)
 	}
-	server.initializeIntegrationSettings()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", server.handleRoot)
 	mux.HandleFunc("/releasestation/api/v1/system/health", server.handleHealth)
@@ -65,6 +69,10 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 
 func (s *Server) registerIntegrationRoutes(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc(prefix+"/integrations/github", s.handleGitHubConnection)
+	mux.HandleFunc(prefix+"/integrations/github/install", s.handleGitHubInstall)
+	mux.HandleFunc(prefix+"/integrations/github/setup", s.handleGitHubSetup)
+	mux.HandleFunc(prefix+"/integrations/github/repositories", s.handleGitHubRepositories)
+	mux.HandleFunc(prefix+"/integrations/github/repositories/", s.handleGitHubRepositories)
 }
 
 func (s *Server) registerSiteRoutes(mux *http.ServeMux, prefix string) {

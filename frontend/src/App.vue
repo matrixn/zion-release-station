@@ -58,6 +58,18 @@ type DiscoveredSite = Site & {
   source: string;
   already_managed: boolean;
 };
+type GithubRepository = {
+  installation_id: number;
+  account_login: string;
+  id: number;
+  name: string;
+  full_name: string;
+  private: boolean;
+  default_branch: string;
+  clone_url: string;
+  ssh_url: string;
+};
+type GithubInstallation = { github_installation_id: number; account_login: string; account_type: string; repository_selection: string; };
 
 const healthState = ref<HealthState>('checking');
 const isDark = ref(true);
@@ -88,8 +100,14 @@ const wizardForm = ref({
   cloneUrl: '',
   branch: 'main',
   strategy: 'in_place',
+  githubInstallationId: null as number | null,
+  githubRepositoryId: null as number | null,
+  githubFullName: '',
+  githubDefaultBranch: '',
 });
-const githubState = ref({ connected: false, account: '', mode: 'public' });
+const githubState = ref({ configured: false, configuration_error: '', connected: false, app_slug: '', setup_url: '', installations: [] as GithubInstallation[] });
+const githubRepositories = ref<GithubRepository[]>([]);
+const githubLoading = ref(false);
 const githubAccount = ref('');
 const githubSaving = ref(false);
 const githubMessage = ref('');
@@ -222,10 +240,59 @@ async function loadGithubStatus() {
     const response = await fetch('/releasestation/api/v1/integrations/github', { headers: { Accept: 'application/json' } });
     if (!response.ok) throw new Error('github');
     const payload = await response.json();
-    githubState.value = payload.data || { connected: false, account: '', mode: 'public' };
-    githubAccount.value = githubState.value.account;
+    githubState.value = payload.data || { configured: false, configuration_error: '', connected: false, app_slug: '', setup_url: '', installations: [] };
   } catch {
-    githubState.value = { connected: false, account: '', mode: 'public' };
+    githubState.value = { configured: false, configuration_error: 'GitHub connector API unavailable', connected: false, app_slug: '', setup_url: '', installations: [] };
+  }
+}
+
+async function loadGithubRepositories() {
+  githubLoading.value = true;
+  githubError.value = '';
+  try {
+    const response = await fetch('/releasestation/api/v1/integrations/github/repositories', { headers: { Accept: 'application/json' } });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut citi repository-urile acordate GitHub App.');
+    githubRepositories.value = payload.data || [];
+  } catch (error) {
+    githubError.value = error instanceof Error ? error.message : 'Nu am putut citi repository-urile GitHub.';
+  } finally {
+    githubLoading.value = false;
+  }
+}
+
+function selectGithubRepository(fullName: string) {
+  const repository = githubRepositories.value.find((item) => item.full_name === fullName);
+  if (!repository) {
+    wizardForm.value.githubInstallationId = null;
+    wizardForm.value.githubRepositoryId = null;
+    wizardForm.value.githubFullName = '';
+    wizardForm.value.githubDefaultBranch = '';
+    return;
+  }
+  wizardForm.value.provider = 'github';
+  wizardForm.value.githubInstallationId = repository.installation_id;
+  wizardForm.value.githubRepositoryId = repository.id;
+  wizardForm.value.githubFullName = repository.full_name;
+  wizardForm.value.githubDefaultBranch = repository.default_branch;
+  wizardForm.value.cloneUrl = repository.clone_url;
+  wizardForm.value.branch = repository.default_branch;
+}
+
+function onGithubRepositoryChange(event: Event) {
+  selectGithubRepository((event.target as HTMLSelectElement).value);
+}
+
+async function installGithubApp() {
+  githubError.value = '';
+  githubMessage.value = '';
+  try {
+    const response = await fetch('/releasestation/api/v1/integrations/github/install', { method: 'POST', headers: { Accept: 'application/json' } });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut porni instalarea GitHub App.');
+    window.location.href = payload.data.url;
+  } catch (error) {
+    githubError.value = error instanceof Error ? error.message : 'Nu am putut porni instalarea GitHub App.';
   }
 }
 
@@ -234,6 +301,7 @@ function openWizard() {
   wizardOpen.value = true;
   wizardStep.value = 1;
   wizardError.value = '';
+  if (githubState.value.connected && !githubRepositories.value.length) loadGithubRepositories();
 }
 
 function closeWizard() {
@@ -285,6 +353,10 @@ async function createManualSite() {
           provider: wizardForm.value.provider,
           clone_url: wizardForm.value.cloneUrl,
           branch: wizardForm.value.branch,
+          github_installation_id: wizardForm.value.githubInstallationId,
+          github_repository_id: wizardForm.value.githubRepositoryId,
+          github_full_name: wizardForm.value.githubFullName,
+          github_default_branch: wizardForm.value.githubDefaultBranch,
         },
       }),
     });
@@ -328,7 +400,7 @@ async function disconnectGithub() {
   try {
     const response = await fetch('/releasestation/api/v1/integrations/github', { method: 'DELETE' });
     if (!response.ok) throw new Error('Nu am putut deconecta GitHub.');
-    githubState.value = { connected: false, account: '', mode: 'public' };
+    githubState.value = { configured: false, configuration_error: 'GitHub connector API unavailable', connected: false, app_slug: '', setup_url: '', installations: [] };
     githubAccount.value = '';
     githubMessage.value = 'Conexiunea GitHub a fost eliminată.';
   } catch (error) {
@@ -530,9 +602,10 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown));
         <section v-if="activeNav === 'Dashboard'" class="connection-grid">
           <article class="panel github-panel">
             <div class="panel-heading"><div><div class="panel-kicker"><GitBranch :size="13" /> SOURCE CONTROL</div><h2>GitHub connection</h2></div><span class="connection-badge" :class="{ connected: githubState.connected }"><span class="status-dot" />{{ githubState.connected ? 'Connected' : 'Not connected' }}</span></div>
-            <p v-if="githubState.connected" class="connection-copy">Public repository discovery is ready for <strong>{{ githubState.account }}</strong>. Choose the repository and branch in the site wizard.</p>
-            <p v-else class="connection-copy">Connect a GitHub username or organization to make repository setup easier. You can still enter any repository URL manually.</p>
-            <div class="connection-foot"><span v-if="githubState.connected" class="muted-copy">Public GitHub connection</span><span v-else class="muted-copy">One minute setup</span><button class="button button-secondary" type="button" @click="activeNav = 'Settings'">{{ githubState.connected ? 'Manage connection' : 'Connect GitHub' }} <ArrowUpRight :size="14" /></button></div>
+            <p v-if="githubState.connected" class="connection-copy">GitHub App este instalată și poate accesa <strong>{{ githubRepositories.length || 'repository-urile permise' }}</strong> repository-uri, inclusiv private. Alegerea se face per site în wizard.</p>
+            <p v-else-if="githubState.configured" class="connection-copy">GitHub App este configurată, dar nu există încă o instalare activă. Instalează App-ul și selectează repository-urile permise în GitHub.</p>
+            <p v-else class="connection-copy">Configurează GitHub App pe serviciul NAS pentru acces securizat la repository-uri private, fără PAT.</p>
+            <div class="connection-foot"><span class="muted-copy">{{ githubState.connected ? `${githubState.installations.length} installation${githubState.installations.length === 1 ? '' : 's'}` : (githubState.configuration_error || 'GitHub App not configured') }}</span><button class="button button-secondary" type="button" @click="activeNav = 'Settings'">{{ githubState.connected ? 'Manage GitHub App' : 'Configure GitHub App' }} <ArrowUpRight :size="14" /></button></div>
           </article>
         </section>
 
@@ -566,11 +639,12 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown));
         <section v-if="activeNav === 'Settings'" class="settings-view">
           <div class="sites-management-header"><div><div class="eyebrow"><span class="eyebrow-pulse" /> WORKSPACE SETTINGS</div><h1>Settings.</h1><p class="hero-copy">Connect the services ReleaseStation uses to discover repositories and deploy sites.</p></div></div>
           <article class="panel settings-card">
-            <div class="settings-card-heading"><span class="settings-icon"><GitBranch :size="18" /></span><div><div class="panel-kicker">SOURCE CONTROL</div><h2>GitHub</h2><p>Use a public GitHub username or organization as the source-control context for your sites.</p></div><span class="connection-badge" :class="{ connected: githubState.connected }"><span class="status-dot" />{{ githubState.connected ? 'Connected' : 'Not connected' }}</span></div>
-            <div class="settings-form"><label><span>GitHub username or organization</span><input v-model="githubAccount" type="text" placeholder="matrixn" autocomplete="off" /><small>For example, matrixn or your organization name. This first connection stores only the public account name, never a token or password.</small></label></div>
+            <div class="settings-card-heading"><span class="settings-icon"><GitBranch :size="18" /></span><div><div class="panel-kicker">SOURCE CONTROL CONNECTOR</div><h2>GitHub App</h2><p>Instalează App-ul GitHub și selectează explicit unul sau mai multe repository-uri, inclusiv private.</p></div><span class="connection-badge" :class="{ connected: githubState.connected }"><span class="status-dot" />{{ githubState.connected ? 'Connected' : 'Not connected' }}</span></div>
+            <div class="settings-form"><div class="connector-status"><span class="status-dot" :class="{ 'status-dot-warning': !githubState.configured }" /><strong>{{ githubState.configured ? 'App credentials detected on NAS' : 'App credentials are not configured' }}</strong><small v-if="githubState.configuration_error">{{ githubState.configuration_error }}</small><small v-else>App: {{ githubState.app_slug }}</small></div><p class="settings-explanation">Private repository access is granted in GitHub during installation. ReleaseStation receives only short-lived installation tokens and never stores a PAT.</p></div>
             <div v-if="githubError" class="discovery-error"><CircleAlert :size="16" />{{ githubError }}</div><div v-if="githubMessage" class="discovery-success"><Check :size="16" />{{ githubMessage }}</div>
-            <div class="settings-actions"><button v-if="githubState.connected" class="button button-secondary" type="button" :disabled="githubSaving" @click="disconnectGithub">Disconnect</button><span /><button class="button button-primary" type="button" :disabled="githubSaving" @click="saveGithubConnection">{{ githubSaving ? 'Saving…' : 'Save GitHub connection' }}</button></div>
-            <div class="settings-note"><CircleHelp :size="15" /><span>Repository URLs and branches are selected per site in the wizard. Private repository credentials will use the encrypted credential store when Git transport is enabled.</span></div>
+            <div class="settings-actions"><span /><button class="button button-secondary" type="button" @click="loadGithubStatus">Refresh status</button><button v-if="githubState.configured" class="button button-primary" type="button" @click="installGithubApp">Install / manage GitHub App <ArrowUpRight :size="14" /></button></div>
+            <div class="settings-note"><CircleHelp :size="15" /><span>Setează Setup URL-ul GitHub App la <code>{{ githubState.setup_url || '/releasestation/api/v1/integrations/github/setup' }}</code>, apoi folosește butonul de mai sus. După instalare, repository-urile private selectate în GitHub apar în wizard.</span></div>
+            <div v-if="githubState.installations.length" class="installation-list"><div v-for="installation in githubState.installations" :key="installation.github_installation_id" class="installation-row"><GitBranch :size="15" /><span><strong>{{ installation.account_login }}</strong><small>{{ installation.account_type }} · {{ installation.repository_selection }} repositories · installation {{ installation.github_installation_id }}</small></span><button class="button button-secondary" type="button" @click="loadGithubRepositories">Refresh repositories</button></div></div>
           </article>
         </section>
 
@@ -631,10 +705,11 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown));
           </div>
 
           <div v-else-if="wizardStep === 2" class="wizard-body">
-            <div class="wizard-intro"><GitBranch :size="20" /><div><strong>Ce repository va alimenta site-ul?</strong><span>Alege providerul, URL-ul de clone și branch-ul urmărit. Pentru GitHub poți folosi URL HTTPS sau SSH.</span></div></div>
+            <div class="wizard-intro"><GitBranch :size="20" /><div><strong>Ce repository va alimenta site-ul?</strong><span>Alege un repository acordat GitHub App sau introdu manual un URL. Repository-urile private apar aici numai după instalarea App-ului cu acces selectat.</span></div></div>
             <div class="form-grid"><label><span>Provider</span><select v-model="wizardForm.provider"><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="bitbucket">Bitbucket</option><option value="generic">Other Git server</option></select></label><label><span>Branch</span><input v-model="wizardForm.branch" type="text" placeholder="main" /></label></div>
+            <label v-if="wizardForm.provider === 'github'"><span>Repository from GitHub App</span><select :value="wizardForm.githubFullName" @change="onGithubRepositoryChange"><option value="">Select a granted repository or enter URL below</option><option v-for="repository in githubRepositories" :key="`${repository.installation_id}:${repository.id}`" :value="repository.full_name">{{ repository.full_name }}{{ repository.private ? ' · private' : '' }} · {{ repository.account_login }}</option></select><small v-if="githubLoading">Loading repositories…</small><small v-else-if="githubState.connected && !githubRepositories.length">No granted repositories found. Refresh GitHub App access.</small></label>
             <label><span>Repository clone URL</span><input v-model="wizardForm.cloneUrl" type="text" placeholder="https://github.com/matrixn/my-site.git" /></label>
-            <div v-if="githubState.connected" class="wizard-hint"><Check :size="15" /><span>GitHub este conectat pentru <strong>{{ githubState.account }}</strong>. Introdu URL-ul repository-ului pe care vrei să-l folosești pentru acest site.</span></div><div v-else class="wizard-hint warning"><CircleAlert :size="15" /><span>GitHub nu este conectat. Poți continua cu URL-ul manual sau poți salva conexiunea din Settings.</span></div>
+            <div v-if="githubState.connected" class="wizard-hint"><Check :size="15" /><span>GitHub App este conectată. Repository-urile private din listă sunt cele aprobate explicit în GitHub.</span></div><div v-else class="wizard-hint warning"><CircleAlert :size="15" /><span>GitHub App nu este conectată. Poți continua cu un URL public/manual sau poți instala App-ul din Settings.</span></div>
           </div>
 
           <div v-else-if="wizardStep === 3" class="wizard-body">

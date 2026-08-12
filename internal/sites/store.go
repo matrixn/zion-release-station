@@ -34,20 +34,28 @@ type Site struct {
 }
 
 type Repository struct {
-	ID           string  `json:"id"`
-	SiteID       string  `json:"site_id"`
-	Provider     string  `json:"provider"`
-	CloneURL     string  `json:"clone_url"`
-	Branch       string  `json:"branch"`
-	CredentialID *string `json:"credential_id,omitempty"`
-	CreatedAt    string  `json:"created_at"`
-	UpdatedAt    string  `json:"updated_at"`
+	ID                   string  `json:"id"`
+	SiteID               string  `json:"site_id"`
+	Provider             string  `json:"provider"`
+	CloneURL             string  `json:"clone_url"`
+	Branch               string  `json:"branch"`
+	CredentialID         *string `json:"credential_id,omitempty"`
+	GitHubInstallationID *int64  `json:"github_installation_id,omitempty"`
+	GitHubRepositoryID   *int64  `json:"github_repository_id,omitempty"`
+	GitHubFullName       string  `json:"github_full_name,omitempty"`
+	GitHubDefaultBranch  string  `json:"github_default_branch,omitempty"`
+	CreatedAt            string  `json:"created_at"`
+	UpdatedAt            string  `json:"updated_at"`
 }
 
 type RepositoryInput struct {
-	Provider string
-	CloneURL string
-	Branch   string
+	Provider             string
+	CloneURL             string
+	Branch               string
+	GitHubInstallationID *int64
+	GitHubRepositoryID   *int64
+	GitHubFullName       string
+	GitHubDefaultBranch  string
 }
 
 type Input struct {
@@ -185,7 +193,7 @@ func (s *Store) Update(ctx context.Context, id string, input Input) (Site, error
 
 func (s *Store) GetRepository(ctx context.Context, siteID string) (*Repository, error) {
 	var repository Repository
-	err := s.db.QueryRowContext(ctx, `SELECT id, site_id, provider, clone_url, branch, credential_id, created_at, updated_at FROM repositories WHERE site_id = ?`, siteID).Scan(&repository.ID, &repository.SiteID, &repository.Provider, &repository.CloneURL, &repository.Branch, &repository.CredentialID, &repository.CreatedAt, &repository.UpdatedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id, site_id, provider, clone_url, branch, credential_id, github_installation_id, github_repository_id, COALESCE(github_full_name, ''), COALESCE(github_default_branch, ''), created_at, updated_at FROM repositories WHERE site_id = ?`, siteID).Scan(&repository.ID, &repository.SiteID, &repository.Provider, &repository.CloneURL, &repository.Branch, &repository.CredentialID, &repository.GitHubInstallationID, &repository.GitHubRepositoryID, &repository.GitHubFullName, &repository.GitHubDefaultBranch, &repository.CreatedAt, &repository.UpdatedAt)
 	if err == sql.ErrNoRows {
 		return nil, ErrNotFound
 	}
@@ -204,7 +212,7 @@ func (s *Store) SaveRepository(ctx context.Context, siteID string, input Reposit
 		return err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err = s.db.ExecContext(ctx, `INSERT INTO repositories(id, site_id, provider, clone_url, branch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(site_id) DO UPDATE SET provider = excluded.provider, clone_url = excluded.clone_url, branch = excluded.branch, updated_at = excluded.updated_at`, id, siteID, strings.ToLower(strings.TrimSpace(input.Provider)), strings.TrimSpace(input.CloneURL), strings.TrimSpace(input.Branch), now, now)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO repositories(id, site_id, provider, clone_url, branch, github_installation_id, github_repository_id, github_full_name, github_default_branch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), ?, ?) ON CONFLICT(site_id) DO UPDATE SET provider = excluded.provider, clone_url = excluded.clone_url, branch = excluded.branch, github_installation_id = excluded.github_installation_id, github_repository_id = excluded.github_repository_id, github_full_name = excluded.github_full_name, github_default_branch = excluded.github_default_branch, updated_at = excluded.updated_at`, id, siteID, strings.ToLower(strings.TrimSpace(input.Provider)), strings.TrimSpace(input.CloneURL), strings.TrimSpace(input.Branch), input.GitHubInstallationID, input.GitHubRepositoryID, strings.TrimSpace(input.GitHubFullName), strings.TrimSpace(input.GitHubDefaultBranch), now, now)
 	if err != nil {
 		return fmt.Errorf("save repository: %w", err)
 	}

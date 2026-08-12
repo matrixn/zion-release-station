@@ -155,18 +155,10 @@ func TestGitHubConnectionSettingsAPI(t *testing.T) {
 	}
 
 	recorder = httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodPut, "/releasestation/api/v1/integrations/github", strings.NewReader(`{"account":"matrixn"}`))
-	request.Header.Set("Content-Type", "application/json")
+	request = httptest.NewRequest(http.MethodPost, "/releasestation/api/v1/integrations/github/install", nil)
 	server.http.Handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"connected":true`) {
-		t.Fatalf("unexpected GitHub save response: %d %q", recorder.Code, recorder.Body.String())
-	}
-
-	recorder = httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodDelete, "/releasestation/api/v1/integrations/github", nil)
-	server.http.Handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"connected":false`) {
-		t.Fatalf("unexpected GitHub delete response: %d %q", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"GITHUB_APP_NOT_CONFIGURED"`) {
+		t.Fatalf("unexpected GitHub install response: %d %q", recorder.Code, recorder.Body.String())
 	}
 }
 

@@ -38,6 +38,21 @@ MVP-ul trebuie să includă:
 - import/discovery pentru site-urile Web Station;
 - detectarea framework-ului și a document root-ului;
 - deploy manual și deploy prin webhook GitHub/GitLab;
+
+### GitHub App connector pentru repository-uri private
+
+ReleaseStation folosește GitHub App Installation pentru repository-uri private. Administratorul configurează cheia privată a App-ului pe NAS, apasă **Install / manage GitHub App** în Settings și selectează explicit repository-urile permise în GitHub. Repository-urile și branch-urile disponibile apar apoi în wizard-ul de site.
+
+Serviciul nu păstrează PAT-uri și nu expune installation token-ul prin API. Tokenul temporar este folosit pentru citirea repository-urilor și expiră automat. Configurația runtime se pune în `/var/packages/zion-releasestation/var/config.env`, cu permisiuni `0600`:
+
+```dotenv
+RS_GITHUB_APP_ID=123456
+RS_GITHUB_APP_SLUG=zion-releasestation
+RS_GITHUB_APP_PRIVATE_KEY_PATH=/var/packages/zion-releasestation/var/github-app.pem
+RS_GITHUB_SETUP_URL=https://raduta.synology.me:5001/releasestation/api/v1/integrations/github/setup
+```
+
+În GitHub App setează Setup URL-ul la aceeași valoare ca `RS_GITHUB_SETUP_URL` și acordă cel puțin `Contents: Read-only` și `Metadata: Read-only`. Pentru mai multe organizații sau conturi, instalează aceeași App de mai multe ori; ReleaseStation păstrează fiecare installation separat și grupează repository-urile după cont.
 - queue de deployment cu lock per proiect și deduplicarea commit-urilor depășite;
 - pași configurabili prin `deployment.yml`;
 - loguri structurate și streaming live al progresului;

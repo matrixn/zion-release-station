@@ -29,9 +29,13 @@ type sitePayload struct {
 	Status      string `json:"status"`
 	Runtime     any    `json:"runtime"`
 	Repository  *struct {
-		Provider string `json:"provider"`
-		CloneURL string `json:"clone_url"`
-		Branch   string `json:"branch"`
+		Provider             string `json:"provider"`
+		CloneURL             string `json:"clone_url"`
+		Branch               string `json:"branch"`
+		GitHubInstallationID *int64 `json:"github_installation_id"`
+		GitHubRepositoryID   *int64 `json:"github_repository_id"`
+		GitHubFullName       string `json:"github_full_name"`
+		GitHubDefaultBranch  string `json:"github_default_branch"`
 	} `json:"repository"`
 }
 
@@ -303,14 +307,18 @@ func (s *Server) prepareSiteInput(ctx context.Context, payload sitePayload) (sit
 }
 
 func repositoryInput(payload *struct {
-	Provider string `json:"provider"`
-	CloneURL string `json:"clone_url"`
-	Branch   string `json:"branch"`
+	Provider             string `json:"provider"`
+	CloneURL             string `json:"clone_url"`
+	Branch               string `json:"branch"`
+	GitHubInstallationID *int64 `json:"github_installation_id"`
+	GitHubRepositoryID   *int64 `json:"github_repository_id"`
+	GitHubFullName       string `json:"github_full_name"`
+	GitHubDefaultBranch  string `json:"github_default_branch"`
 }) *sites.RepositoryInput {
 	if payload == nil {
 		return nil
 	}
-	return &sites.RepositoryInput{Provider: payload.Provider, CloneURL: payload.CloneURL, Branch: payload.Branch}
+	return &sites.RepositoryInput{Provider: payload.Provider, CloneURL: payload.CloneURL, Branch: payload.Branch, GitHubInstallationID: payload.GitHubInstallationID, GitHubRepositoryID: payload.GitHubRepositoryID, GitHubFullName: payload.GitHubFullName, GitHubDefaultBranch: payload.GitHubDefaultBranch}
 }
 
 func discoveredInput(candidate webstation.DiscoveredSite) sites.Input {
