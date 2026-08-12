@@ -1,0 +1,17 @@
+DirectoryIndex index.php
+
+# Apache 2.4 front-controller routing for Web Station.
+RewriteEngine On
+
+# Serve existing public assets and index.php directly.
+RewriteCond %{REQUEST_FILENAME} -f [OR]
+RewriteCond %{REQUEST_FILENAME} -d
+RewriteRule ^ - [L]
+
+# Send /healthz, /github/callback and /v1/* to the PHP application.
+RewriteRule ^ index.php [QSA,L]
+
+# Do not expose hidden files if one is ever placed in public/.
+<FilesMatch "^\.">
+    Require all denied
+</FilesMatch>

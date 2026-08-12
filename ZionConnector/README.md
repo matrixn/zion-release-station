@@ -7,7 +7,7 @@ Zion Connector este serviciul PHP public care păstrează cheia privată a GitHu
 - PHP 8.2+ cu `curl`, `openssl`, `pdo_mysql`;
 - Composer 2;
 - MariaDB 10.5+ sau MySQL 8;
-- Web Station cu backend Nginx, document root în `public/` și HTTPS;
+- Web Station cu backend Apache 2.4, document root în `public/` și HTTPS;
 - o GitHub App publică, cu `Contents: Read-only` și `Metadata: Read-only`;
 - cheia PEM montată ca secret, cu permisiuni `0640` și grupul de runtime Web Station (`http` pe Synology).
 
@@ -18,19 +18,19 @@ composer install
 php -S 127.0.0.1:8787 -t public public/index.php
 ```
 
-În producție, rulează `public/index.php` prin PHP-FPM/Nginx și expune numai portalul HTTPS. Setează `CONNECTOR_DB_DRIVER=mysql` și variabilele `CONNECTOR_DB_*`; schema este creată automat în MariaDB cu InnoDB și utf8mb4.
+În producție, rulează `public/index.php` prin Apache 2.4 și PHP-FPM și expune numai portalul HTTPS. Setează `CONNECTOR_DB_DRIVER=mysql` și variabilele `CONNECTOR_DB_*`; schema este creată automat în MariaDB cu InnoDB și utf8mb4.
 
-`.htaccess` din root este fallback pentru Apache. Nginx nu citește `.htaccess`; folosește regulile din `deploy/nginx/connector.raduta.synology.me.conf`.
+`.htaccess` din root este protecția fallback pentru cazul în care document root-ul este configurat greșit. Routing-ul Apache 2.4 principal este în `public/.htaccess`.
 
-## Configurare Nginx în Web Station
+## Configurare Apache 2.4 în Web Station
 
-Configurația se face în Web Station, nu prin editarea fișierelor Nginx generate de DSM:
+Configurația se face în Web Station:
 
 1. Deschide `Web Station → Web Service` și creează sau editează serviciul pentru `connector.raduta.synology.me`.
-2. Selectează backend-ul `Nginx` și setează document root-ul exact la `/volume1/www/connector.raduta.synology.me/public`.
+2. Selectează backend-ul `Apache 2.4` și setează document root-ul exact la `/volume1/www/connector.raduta.synology.me/public`.
 3. Selectează un profil PHP 8.2 sau mai nou și activează `curl`, `openssl`, `PDO`, `pdo_mysql` și `mbstring`.
 4. Configurează certificatul HTTPS pentru portalul `connector.raduta.synology.me`.
-5. În regulile Nginx personalizate ale serviciului, adaugă conținutul din `deploy/nginx/connector.raduta.synology.me.conf`.
+5. Asigură-te că serviciul permite `.htaccess` / overrides pentru `FileInfo` și că modulul Apache `mod_rewrite` este activ.
 6. Salvează serviciul, repornește portalul și verifică:
 
    ```bash
@@ -38,9 +38,7 @@ Configurația se face în Web Station, nu prin editarea fișierelor Nginx genera
    curl -i https://connector.raduta.synology.me/healthz
    ```
 
-Răspunsul de la `/healthz` trebuie să fie HTTP 200 JSON. Nginx trebuie să trimită rutele `/healthz`, `/github/callback` și `/v1/*` către `public/index.php`; directiva `try_files` face acest lucru. Nu folosi `fastcgi_pass 127.0.0.1:9000`: Web Station gestionează automat socket-ul PHP-FPM al profilului selectat.
-
-Dacă versiunea instalată de Web Station nu afișează câmpul pentru reguli Nginx personalizate, păstrează document root-ul și profilul PHP de mai sus și folosește mecanismul oficial de înregistrare Web Station al pachetului; nu modifica manual configurația Nginx generată în `/var/packages/WebStation/var/`.
+Răspunsul de la `/healthz` trebuie să fie HTTP 200 JSON. `.htaccess` trimite rutele `/healthz`, `/github/callback` și `/v1/*` către `public/index.php`; nu este necesară o regulă Nginx sau un `fastcgi_pass` configurat manual.
 
 ## Provisionarea NAS-ului
 
