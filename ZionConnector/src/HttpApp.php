@@ -139,10 +139,6 @@ final class HttpApp
             $this->json(422, ['error' => ['code' => 'INVALID_PAIRING', 'message' => 'The ReleaseStation instance is invalid.']]);
             return;
         }
-        if ($this->database->findInstance($instanceId) !== null) {
-            $this->json(409, ['error' => ['code' => 'INSTANCE_EXISTS', 'message' => 'This ReleaseStation instance is already paired.']]);
-            return;
-        }
         $state = self::randomToken(32);
         $this->database->createPairingSession(
             self::randomToken(18),
@@ -262,9 +258,13 @@ final class HttpApp
         $account = is_array($appInstallation['account'] ?? null) ? $appInstallation['account'] : [];
         $instanceId = (string) $session['instance_id'];
         $isPairing = $pairingSession !== null;
-        if ($isPairing && $this->database->findInstance($instanceId) === null) {
+        if ($isPairing) {
             $credential = $this->config->pairingCredential($instanceId, $state);
-            $this->database->createInstance($instanceId, null, hash('sha256', $credential), (string) parse_url((string) $session['return_url'], PHP_URL_HOST));
+            if ($this->database->findInstance($instanceId) === null) {
+                $this->database->createInstance($instanceId, null, hash('sha256', $credential), (string) parse_url((string) $session['return_url'], PHP_URL_HOST));
+            } else {
+                $this->database->updateInstanceCredential($instanceId, hash('sha256', $credential));
+            }
         }
         $this->database->saveInstallation([
             'id' => self::randomToken(18),

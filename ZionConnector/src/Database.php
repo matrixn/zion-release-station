@@ -192,6 +192,15 @@ final class Database
         $statement->execute(['seen' => $now, 'updated' => $now, 'id' => $instanceId]);
     }
 
+    public function updateInstanceCredential(string $instanceId, string $credentialHash): void
+    {
+        $statement = $this->pdo->prepare('UPDATE connector_instances SET credential_hash = :credential_hash, updated_at = :updated_at WHERE id = :id AND status = \'active\'');
+        $statement->execute(['credential_hash' => $credentialHash, 'updated_at' => gmdate('c'), 'id' => $instanceId]);
+        if ($statement->rowCount() !== 1) {
+            throw new RuntimeException('The ReleaseStation instance could not be re-paired.');
+        }
+    }
+
     public function createSession(string $id, string $instanceId, string $stateHash, string $returnUrl, string $expiresAt): void
     {
         $statement = $this->pdo->prepare(<<<'SQL'

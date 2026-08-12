@@ -29,6 +29,8 @@ final class DatabaseTest extends TestCase
 
         self::assertSame('nas-001', $instance['id']);
         self::assertSame('nas-001', $database->findInstance('nas-001')['id']);
+		$database->updateInstanceCredential('nas-001', hash('sha256', 'rotated-secret'));
+		self::assertSame(hash('sha256', 'rotated-secret'), $database->findInstance('nas-001')['credential_hash']);
 
         $database->createSession('session-001', 'nas-001', hash('sha256', 'state'), 'https://nas.example.com/releasestation/', gmdate('c', time() + 600));
         self::assertNotNull($database->consumeSession(hash('sha256', 'state')));
