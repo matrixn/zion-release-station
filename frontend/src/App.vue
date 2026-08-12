@@ -49,6 +49,7 @@ type Site = {
   framework: string;
   strategy: string;
   status: string;
+  repository?: { provider: string; clone_url: string; branch: string };
   runtime?: { permissions?: { status: string; deployable: boolean } };
 };
 type DiscoveredSite = Site & {
@@ -73,6 +74,26 @@ const discoveredSites = ref<DiscoveredSite[]>([]);
 const selectedDiscoveredPaths = ref<string[]>([]);
 const importMessage = ref('');
 const webStationState = ref<'checking' | 'available' | 'unavailable'>('checking');
+const wizardOpen = ref(false);
+const wizardStep = ref(1);
+const wizardSaving = ref(false);
+const wizardError = ref('');
+const wizardForm = ref({
+  name: '',
+  url: '',
+  projectRoot: '',
+  webRoot: '',
+  framework: 'auto',
+  provider: 'github',
+  cloneUrl: '',
+  branch: 'main',
+  strategy: 'in_place',
+});
+const githubState = ref({ connected: false, account: '', mode: 'public' });
+const githubAccount = ref('');
+const githubSaving = ref(false);
+const githubMessage = ref('');
+const githubError = ref('');
 
 const navItems = computed(() => [
   { label: 'Dashboard', icon: LayoutDashboard },
@@ -138,6 +159,8 @@ function closeCommandPalette() {
 function runCommand(label: string) {
   closeCommandPalette();
   if (label === 'Discover Web Station') openDiscovery();
+  if (label === 'Add a new site') openWizard();
+  if (label === 'Open settings') activeNav.value = 'Settings';
 }
 
 function siteClass(site: Site) {
@@ -194,6 +217,127 @@ async function loadWebStationStatus() {
   }
 }
 
+async function loadGithubStatus() {
+  try {
+    const response = await fetch('/releasestation/api/v1/integrations/github', { headers: { Accept: 'application/json' } });
+    if (!response.ok) throw new Error('github');
+    const payload = await response.json();
+    githubState.value = payload.data || { connected: false, account: '', mode: 'public' };
+    githubAccount.value = githubState.value.account;
+  } catch {
+    githubState.value = { connected: false, account: '', mode: 'public' };
+  }
+}
+
+function openWizard() {
+  discoveryOpen.value = false;
+  wizardOpen.value = true;
+  wizardStep.value = 1;
+  wizardError.value = '';
+}
+
+function closeWizard() {
+  if (!wizardSaving.value) wizardOpen.value = false;
+}
+
+function nextWizardStep() {
+  wizardError.value = '';
+  if (wizardStep.value === 1) {
+    if (!wizardForm.value.name.trim() || !wizardForm.value.url.trim() || !wizardForm.value.projectRoot.trim()) {
+      wizardError.value = 'Completează numele, URL-ul public și calea proiectului de pe NAS.';
+      return;
+    }
+    try {
+      const parsed = new URL(wizardForm.value.url);
+      if (!['http:', 'https:'].includes(parsed.protocol) || !parsed.hostname) throw new Error('url');
+    } catch {
+      wizardError.value = 'URL-ul trebuie să înceapă cu http:// sau https:// și să conțină un domeniu valid.';
+      return;
+    }
+  }
+  if (wizardStep.value === 2 && (!wizardForm.value.cloneUrl.trim() || !wizardForm.value.branch.trim())) {
+    wizardError.value = 'Adaugă URL-ul repository-ului și branch-ul folosit la deploy.';
+    return;
+  }
+  if (wizardStep.value < 4) wizardStep.value += 1;
+}
+
+function previousWizardStep() {
+  wizardError.value = '';
+  if (wizardStep.value > 1) wizardStep.value -= 1;
+}
+
+async function createManualSite() {
+  wizardSaving.value = true;
+  wizardError.value = '';
+  try {
+    const response = await fetch('/releasestation/api/v1/sites', {
+      method: 'POST',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: wizardForm.value.name,
+        url: wizardForm.value.url,
+        project_root: wizardForm.value.projectRoot,
+        web_root: wizardForm.value.webRoot || undefined,
+        framework: wizardForm.value.framework,
+        strategy: wizardForm.value.strategy,
+        repository: {
+          provider: wizardForm.value.provider,
+          clone_url: wizardForm.value.cloneUrl,
+          branch: wizardForm.value.branch,
+        },
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut salva site-ul.');
+    await loadSites();
+    wizardOpen.value = false;
+    activeNav.value = 'Sites';
+  } catch (error) {
+    wizardError.value = error instanceof Error ? error.message : 'Nu am putut salva site-ul.';
+  } finally {
+    wizardSaving.value = false;
+  }
+}
+
+async function saveGithubConnection() {
+  githubSaving.value = true;
+  githubMessage.value = '';
+  githubError.value = '';
+  try {
+    const response = await fetch('/releasestation/api/v1/integrations/github', {
+      method: 'PUT',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account: githubAccount.value }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut salva conexiunea GitHub.');
+    githubState.value = payload.data;
+    githubMessage.value = 'Conexiunea GitHub a fost salvată.';
+  } catch (error) {
+    githubError.value = error instanceof Error ? error.message : 'Nu am putut salva conexiunea GitHub.';
+  } finally {
+    githubSaving.value = false;
+  }
+}
+
+async function disconnectGithub() {
+  githubSaving.value = true;
+  githubMessage.value = '';
+  githubError.value = '';
+  try {
+    const response = await fetch('/releasestation/api/v1/integrations/github', { method: 'DELETE' });
+    if (!response.ok) throw new Error('Nu am putut deconecta GitHub.');
+    githubState.value = { connected: false, account: '', mode: 'public' };
+    githubAccount.value = '';
+    githubMessage.value = 'Conexiunea GitHub a fost eliminată.';
+  } catch (error) {
+    githubError.value = error instanceof Error ? error.message : 'Nu am putut deconecta GitHub.';
+  } finally {
+    githubSaving.value = false;
+  }
+}
+
 async function archiveSite(site: Site) {
   if (!window.confirm(`Archive ${site.hostname || site.name}?`)) return;
   const response = await fetch(`/releasestation/api/v1/sites/${site.id}`, { method: 'DELETE' });
@@ -211,13 +355,14 @@ async function openDiscovery() {
   try {
     discoveryPhase.value = 'Detecting hosted applications';
     const response = await fetch('/releasestation/api/v1/webstation/discover', { method: 'POST', headers: { Accept: 'application/json' } });
-    if (!response.ok) throw new Error('discovery');
-    const payload = await response.json();
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) throw new Error(payload?.error?.message || 'Discovery endpoint returned an error.');
+    if (!payload || !Array.isArray(payload.data)) throw new Error('The installed SPK does not expose the Web Station discovery API. Install the latest package first.');
     discoveredSites.value = payload.data || [];
     selectedDiscoveredPaths.value = discoveredSites.value.filter((site) => !site.already_managed).map((site) => site.project_root);
     discoveryPhase.value = discoveredSites.value.length ? 'Review discovered applications' : 'No applications found';
-  } catch {
-    discoveryError.value = 'Web Station discovery is unavailable. Verify the configured read-only roots.';
+  } catch (error) {
+    discoveryError.value = error instanceof Error ? error.message : 'Web Station discovery is unavailable. Verify the configured read-only roots.';
     discoveryPhase.value = 'Discovery failed';
   } finally {
     discoveryLoading.value = false;
@@ -255,6 +400,7 @@ onMounted(() => {
   checkHealth();
   loadSites();
   loadWebStationStatus();
+  loadGithubStatus();
 });
 
 onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown));
@@ -295,7 +441,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown));
 
       <div class="sidebar-spacer" />
       <div class="sidebar-bottom">
-        <button class="nav-item" type="button"><Settings2 :size="17" /><span>Settings</span></button>
+        <button class="nav-item" :class="{ active: activeNav === 'Settings' }" type="button" @click="activeNav = 'Settings'"><Settings2 :size="17" /><span>Settings</span></button>
         <button class="nav-item" type="button"><LifeBuoy :size="17" /><span>Help center</span></button>
         <div class="profile-card">
           <div class="profile-avatar">MR</div>
@@ -325,7 +471,7 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown));
           </div>
           <div class="hero-actions">
             <button class="button button-secondary" type="button" @click="openDiscovery"><Globe2 :size="16" />Discover Web Station</button>
-            <button class="button button-primary" type="button"><Plus :size="17" />New project</button>
+            <button class="button button-primary" type="button" @click="openWizard"><Plus :size="17" />New project</button>
           </div>
         </section>
 
@@ -381,6 +527,15 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown));
           </article>
         </section>
 
+        <section v-if="activeNav === 'Dashboard'" class="connection-grid">
+          <article class="panel github-panel">
+            <div class="panel-heading"><div><div class="panel-kicker"><GitBranch :size="13" /> SOURCE CONTROL</div><h2>GitHub connection</h2></div><span class="connection-badge" :class="{ connected: githubState.connected }"><span class="status-dot" />{{ githubState.connected ? 'Connected' : 'Not connected' }}</span></div>
+            <p v-if="githubState.connected" class="connection-copy">Public repository discovery is ready for <strong>{{ githubState.account }}</strong>. Choose the repository and branch in the site wizard.</p>
+            <p v-else class="connection-copy">Connect a GitHub username or organization to make repository setup easier. You can still enter any repository URL manually.</p>
+            <div class="connection-foot"><span v-if="githubState.connected" class="muted-copy">Public GitHub connection</span><span v-else class="muted-copy">One minute setup</span><button class="button button-secondary" type="button" @click="activeNav = 'Settings'">{{ githubState.connected ? 'Manage connection' : 'Connect GitHub' }} <ArrowUpRight :size="14" /></button></div>
+          </article>
+        </section>
+
         <section v-if="activeNav === 'Dashboard'" class="section-heading"><div><div class="panel-kicker">YOUR SURFACE</div><h2>Managed sites</h2></div><button class="text-button" type="button" @click="activeNav = 'Sites'">View all sites <ArrowUpRight :size="15" /></button></section>
         <section v-if="activeNav === 'Dashboard'" class="sites-grid">
           <article v-if="sites.length === 0" class="site-card empty-site-card">
@@ -394,18 +549,29 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown));
             <div class="site-status" :class="{ 'site-status-warning': site.status !== 'active' }"><span class="status-dot" />{{ displayStatus(site.status) }}<span class="site-status-time">{{ site.strategy }}</span></div>
             <div class="site-card-foot"><span><Globe2 :size="14" />{{ site.web_root }}</span><code>{{ site.project_root }}</code><button type="button" aria-label="Deploy site" disabled><Play :size="14" /></button></div>
           </article>
-          <button class="site-card add-site-card" type="button" @click="openDiscovery"><span class="add-site-icon"><Plus :size="19" /></span><strong>Discover Web Station</strong><span>Import existing applications into ReleaseStation</span></button>
+          <button class="site-card add-site-card" type="button" @click="openWizard"><span class="add-site-icon"><Plus :size="19" /></span><strong>Add site manually</strong><span>Configure URL, repository and synchronization</span></button>
         </section>
 
         <section v-if="activeNav === 'Sites'" class="sites-management">
-          <div class="sites-management-header"><div><div class="eyebrow"><span class="eyebrow-pulse" /> SITE CATALOG</div><h1>Managed sites.</h1><p class="hero-copy">Review imported Web Station applications, document roots and deployment readiness.</p></div><div class="hero-actions"><button class="button button-secondary" type="button" @click="loadSites"><RotateCw :size="15" />Refresh</button><button class="button button-primary" type="button" @click="openDiscovery"><Globe2 :size="15" />Discover Web Station</button></div></div>
+          <div class="sites-management-header"><div><div class="eyebrow"><span class="eyebrow-pulse" /> SITE CATALOG</div><h1>Managed sites.</h1><p class="hero-copy">Review imported Web Station applications, document roots and deployment readiness.</p></div><div class="hero-actions"><button class="button button-secondary" type="button" @click="loadSites"><RotateCw :size="15" />Refresh</button><button class="button button-secondary" type="button" @click="openDiscovery"><Globe2 :size="15" />Discover Web Station</button><button class="button button-primary" type="button" @click="openWizard"><Plus :size="15" />Add site</button></div></div>
           <div class="sites-management-summary"><span><strong>{{ sites.length }}</strong> managed sites</span><span><span class="status-dot" />{{ webStationLabel }}</span><span>Discovery adapter: read-only</span></div>
           <div v-if="sites.length" class="management-list">
             <article v-for="site in sites" :key="site.id" class="management-row">
               <span class="framework-mark"><Code2 :size="17" /></span><span class="management-copy"><strong>{{ site.hostname || site.name }}</strong><small>{{ site.framework }} · {{ site.web_root }}</small><small>{{ site.project_root }}</small></span><span class="discovery-badge" :class="site.status === 'active' ? 'ready' : 'read_only'">{{ displayStatus(site.status) }}</span><button class="more-button" type="button" aria-label="Archive site" @click="archiveSite(site)"><X :size="15" /></button>
             </article>
           </div>
-          <div v-else class="management-empty"><Globe2 :size="24" /><strong>No sites are managed yet</strong><span>Start with a read-only discovery scan of Web Station.</span><button class="button button-primary" type="button" @click="openDiscovery">Discover applications</button></div>
+          <div v-else class="management-empty"><Globe2 :size="24" /><strong>No sites are managed yet</strong><span>Discover a Web Station application or configure one manually.</span><div class="hero-actions"><button class="button button-secondary" type="button" @click="openDiscovery">Discover applications</button><button class="button button-primary" type="button" @click="openWizard">Add manually</button></div></div>
+        </section>
+
+        <section v-if="activeNav === 'Settings'" class="settings-view">
+          <div class="sites-management-header"><div><div class="eyebrow"><span class="eyebrow-pulse" /> WORKSPACE SETTINGS</div><h1>Settings.</h1><p class="hero-copy">Connect the services ReleaseStation uses to discover repositories and deploy sites.</p></div></div>
+          <article class="panel settings-card">
+            <div class="settings-card-heading"><span class="settings-icon"><GitBranch :size="18" /></span><div><div class="panel-kicker">SOURCE CONTROL</div><h2>GitHub</h2><p>Use a public GitHub username or organization as the source-control context for your sites.</p></div><span class="connection-badge" :class="{ connected: githubState.connected }"><span class="status-dot" />{{ githubState.connected ? 'Connected' : 'Not connected' }}</span></div>
+            <div class="settings-form"><label><span>GitHub username or organization</span><input v-model="githubAccount" type="text" placeholder="matrixn" autocomplete="off" /><small>For example, matrixn or your organization name. This first connection stores only the public account name, never a token or password.</small></label></div>
+            <div v-if="githubError" class="discovery-error"><CircleAlert :size="16" />{{ githubError }}</div><div v-if="githubMessage" class="discovery-success"><Check :size="16" />{{ githubMessage }}</div>
+            <div class="settings-actions"><button v-if="githubState.connected" class="button button-secondary" type="button" :disabled="githubSaving" @click="disconnectGithub">Disconnect</button><span /><button class="button button-primary" type="button" :disabled="githubSaving" @click="saveGithubConnection">{{ githubSaving ? 'Saving…' : 'Save GitHub connection' }}</button></div>
+            <div class="settings-note"><CircleHelp :size="15" /><span>Repository URLs and branches are selected per site in the wizard. Private repository credentials will use the encrypted credential store when Git transport is enabled.</span></div>
+          </article>
         </section>
 
         <footer v-if="activeNav === 'Dashboard'" class="footer-note"><span><ShieldCheck :size="14" />Protected by ReleaseStation guardrails</span><span>v0.1.0 · Foundation milestone</span></footer>
@@ -443,6 +609,47 @@ onBeforeUnmount(() => document.removeEventListener('keydown', onKeydown));
             </label>
           </div>
           <footer class="discovery-footer"><span>{{ selectedDiscoveredPaths.length }} selected</span><div><button class="button button-secondary" type="button" @click="openDiscovery">Rescan</button><button class="button button-primary" type="button" :disabled="discoveryLoading || !selectedDiscoveredPaths.length" @click="importSelectedSites">Import selected</button></div></footer>
+        </section>
+      </div>
+    </Transition>
+
+    <Transition name="palette-fade">
+      <div v-if="wizardOpen" class="palette-backdrop" @click.self="closeWizard">
+        <section class="wizard-dialog" role="dialog" aria-modal="true" aria-labelledby="wizard-title">
+          <header class="wizard-header">
+            <div><div class="panel-kicker"><Plus :size="13" /> NEW SITE</div><h2 id="wizard-title">Add a site</h2><p>Configure the address, source repository and safe synchronization behavior.</p></div>
+            <button class="icon-button" type="button" aria-label="Close wizard" @click="closeWizard"><X :size="17" /></button>
+          </header>
+          <div class="wizard-steps" aria-label="Wizard progress"><span v-for="step in 4" :key="step" class="wizard-step" :class="{ active: wizardStep === step, complete: wizardStep > step }"><b>{{ wizardStep > step ? '✓' : step }}</b><small>{{ ['Site', 'Repository', 'Sync', 'Review'][step - 1] }}</small></span></div>
+
+          <div v-if="wizardStep === 1" class="wizard-body">
+            <div class="wizard-intro"><Globe2 :size="20" /><div><strong>Where is this site?</strong><span>URL-ul este adresa publică. Căile sunt locațiile reale de pe NAS pe care ReleaseStation le va verifica și actualiza.</span></div></div>
+            <div class="form-grid"><label><span>Site name</span><input v-model="wizardForm.name" type="text" placeholder="My WordPress site" /></label><label><span>Public site URL</span><input v-model="wizardForm.url" type="url" placeholder="https://example.com" /></label></div>
+            <label><span>Project root on Synology</span><input v-model="wizardForm.projectRoot" type="text" placeholder="/volume1/www/example.com" /><small>Directorul proiectului, nu URL-ul. Trebuie să existe deja pe NAS și să fie accesibil serviciului ReleaseStation.</small></label>
+            <label><span>Web/document root <em>optional</em></span><input v-model="wizardForm.webRoot" type="text" placeholder="Auto-detect from framework" /><small>Pentru Laravel, Symfony și Flarum se folosește automat <code>public/</code> dacă lași câmpul gol.</small></label>
+            <label><span>Framework detection</span><select v-model="wizardForm.framework"><option value="auto">Auto-detect (recommended)</option><option value="wordpress">WordPress</option><option value="laravel">Laravel</option><option value="symfony">Symfony</option><option value="flarum">Flarum</option><option value="node">Node.js</option><option value="php">PHP</option><option value="unknown">Other / unknown</option></select></label>
+          </div>
+
+          <div v-else-if="wizardStep === 2" class="wizard-body">
+            <div class="wizard-intro"><GitBranch :size="20" /><div><strong>Ce repository va alimenta site-ul?</strong><span>Alege providerul, URL-ul de clone și branch-ul urmărit. Pentru GitHub poți folosi URL HTTPS sau SSH.</span></div></div>
+            <div class="form-grid"><label><span>Provider</span><select v-model="wizardForm.provider"><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="bitbucket">Bitbucket</option><option value="generic">Other Git server</option></select></label><label><span>Branch</span><input v-model="wizardForm.branch" type="text" placeholder="main" /></label></div>
+            <label><span>Repository clone URL</span><input v-model="wizardForm.cloneUrl" type="text" placeholder="https://github.com/matrixn/my-site.git" /></label>
+            <div v-if="githubState.connected" class="wizard-hint"><Check :size="15" /><span>GitHub este conectat pentru <strong>{{ githubState.account }}</strong>. Introdu URL-ul repository-ului pe care vrei să-l folosești pentru acest site.</span></div><div v-else class="wizard-hint warning"><CircleAlert :size="15" /><span>GitHub nu este conectat. Poți continua cu URL-ul manual sau poți salva conexiunea din Settings.</span></div>
+          </div>
+
+          <div v-else-if="wizardStep === 3" class="wizard-body">
+            <div class="wizard-intro"><RotateCw :size="20" /><div><strong>Cum se sincronizează?</strong><span>Alege comportamentul potrivit pentru infrastructura ta. Poți schimba strategia ulterior când activăm pipeline-ul complet.</span></div></div>
+            <div class="strategy-grid"><label class="strategy-card" :class="{ selected: wizardForm.strategy === 'in_place' }"><input v-model="wizardForm.strategy" type="radio" value="in_place" /><span class="strategy-title">In-place <em>recommended</em></span><span>Actualizează directorul existent Web Station. Este potrivit pentru site-urile deja instalate și păstrează structura și datele locale.</span></label><label class="strategy-card" :class="{ selected: wizardForm.strategy === 'atomic' }"><input v-model="wizardForm.strategy" type="radio" value="atomic" /><span class="strategy-title">Atomic releases</span><span>Pregătește release-uri separate și activează unul doar după verificări. Oferă rollback mai sigur, dar necesită layout compatibil cu release-uri.</span></label></div>
+            <div class="wizard-hint"><CircleHelp :size="15" /><span>ReleaseStation nu execută încă sincronizarea la salvarea wizard-ului; acum înregistrează configurația și verifică rădăcinile. Deploy-ul va folosi această alegere.</span></div>
+          </div>
+
+          <div v-else class="wizard-body">
+            <div class="wizard-intro"><Check :size="20" /><div><strong>Verifică configurația</strong><span>Site-ul va fi adăugat în catalog. Poți reveni ulterior în setările lui pentru ajustări.</span></div></div>
+            <dl class="review-list"><div><dt>Site</dt><dd>{{ wizardForm.name }} · {{ wizardForm.url }}</dd></div><div><dt>Project root</dt><dd><code>{{ wizardForm.projectRoot }}</code></dd></div><div><dt>Repository</dt><dd>{{ wizardForm.provider }} · {{ wizardForm.cloneUrl }} · {{ wizardForm.branch }}</dd></div><div><dt>Framework / root</dt><dd>{{ wizardForm.framework }} · {{ wizardForm.webRoot || 'auto-detect' }}</dd></div><div><dt>Synchronization</dt><dd>{{ wizardForm.strategy === 'in_place' ? 'In-place' : 'Atomic releases' }}</dd></div></dl>
+          </div>
+
+          <div v-if="wizardError" class="discovery-error wizard-error"><CircleAlert :size="16" />{{ wizardError }}</div>
+          <footer class="wizard-footer"><span>Step {{ wizardStep }} of 4</span><div><button class="button button-secondary" type="button" :disabled="wizardSaving" @click="wizardStep === 1 ? closeWizard() : previousWizardStep()">{{ wizardStep === 1 ? 'Cancel' : 'Back' }}</button><button v-if="wizardStep < 4" class="button button-primary" type="button" @click="nextWizardStep">Continue <ArrowUpRight :size="14" /></button><button v-else class="button button-primary" type="button" :disabled="wizardSaving" @click="createManualSite">{{ wizardSaving ? 'Saving…' : 'Create site' }} <Check :size="14" /></button></div></footer>
         </section>
       </div>
     </Transition>

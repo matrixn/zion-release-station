@@ -137,3 +137,66 @@ func TestWebStationDiscoveryAndSiteCRUDAPI(t *testing.T) {
 		t.Fatalf("unexpected sites response: %d %q", recorder.Code, recorder.Body.String())
 	}
 }
+
+func TestGitHubConnectionSettingsAPI(t *testing.T) {
+	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(config.Config{WebRoot: t.TempDir(), Version: "0.1.0-test"}, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/releasestation/api/v1/integrations/github", nil)
+	server.http.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"connected":false`) {
+		t.Fatalf("unexpected initial GitHub status: %d %q", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPut, "/releasestation/api/v1/integrations/github", strings.NewReader(`{"account":"matrixn"}`))
+	request.Header.Set("Content-Type", "application/json")
+	server.http.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"connected":true`) {
+		t.Fatalf("unexpected GitHub save response: %d %q", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodDelete, "/releasestation/api/v1/integrations/github", nil)
+	server.http.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"connected":false`) {
+		t.Fatalf("unexpected GitHub delete response: %d %q", recorder.Code, recorder.Body.String())
+	}
+}
+
+func TestManualSiteAPIAutoDetectsFrameworkAndSavesRepository(t *testing.T) {
+	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	projectRoot := t.TempDir()
+	if err := os.Mkdir(filepath.Join(projectRoot, "public"), 0o755); err != nil {
+		t.Fatalf("mkdir public: %v", err)
+	}
+	for _, relative := range []string{"artisan", "composer.json", "public/index.php"} {
+		path := filepath.Join(projectRoot, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("test"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	server := NewServer(config.Config{WebRoot: t.TempDir(), Version: "0.1.0-test"}, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	body := `{"name":"Example","url":"https://example.test","project_root":"` + projectRoot + `","framework":"auto","strategy":"atomic","repository":{"provider":"github","clone_url":"https://github.com/example/site.git","branch":"main"}}`
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/releasestation/api/v1/sites", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	server.http.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusCreated || !strings.Contains(recorder.Body.String(), `"framework":"laravel"`) || !strings.Contains(recorder.Body.String(), `"clone_url":"https://github.com/example/site.git"`) {
+		t.Fatalf("unexpected manual site response: %d %q", recorder.Code, recorder.Body.String())
+	}
+}

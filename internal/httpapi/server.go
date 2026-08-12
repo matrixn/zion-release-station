@@ -39,6 +39,7 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 	if _, err := db.Exec(`INSERT OR IGNORE INTO settings(key, value_json, updated_at) VALUES (?, 'true', datetime('now'))`, webAccessSettingKey); err != nil {
 		logger.Error("initialize web access setting", "error", err)
 	}
+	server.initializeIntegrationSettings()
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", server.handleRoot)
 	mux.HandleFunc("/releasestation/api/v1/system/health", server.handleHealth)
@@ -51,6 +52,8 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 	mux.HandleFunc("/api/v1/settings/web-access", server.handleWebAccess)
 	server.registerSiteRoutes(mux, "/releasestation/api/v1")
 	server.registerSiteRoutes(mux, "/api/v1")
+	server.registerIntegrationRoutes(mux, "/releasestation/api/v1")
+	server.registerIntegrationRoutes(mux, "/api/v1")
 	mux.Handle("/releasestation/", server.staticHandler())
 	server.http = &http.Server{
 		Addr:              cfg.BindAddress,
@@ -58,6 +61,10 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	return server
+}
+
+func (s *Server) registerIntegrationRoutes(mux *http.ServeMux, prefix string) {
+	mux.HandleFunc(prefix+"/integrations/github", s.handleGitHubConnection)
 }
 
 func (s *Server) registerSiteRoutes(mux *http.ServeMux, prefix string) {

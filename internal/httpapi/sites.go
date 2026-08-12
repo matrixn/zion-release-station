@@ -6,8 +6,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
+	"path/filepath"
 	"strings"
 
+	"github.com/matrixn/zion-release-station/internal/detection"
 	"github.com/matrixn/zion-release-station/internal/pathsecurity"
 	"github.com/matrixn/zion-release-station/internal/permissions"
 	"github.com/matrixn/zion-release-station/internal/sites"
@@ -17,6 +20,7 @@ import (
 type sitePayload struct {
 	Name        string `json:"name"`
 	Slug        string `json:"slug"`
+	URL         string `json:"url"`
 	Hostname    string `json:"hostname"`
 	ProjectRoot string `json:"project_root"`
 	WebRoot     string `json:"web_root"`
@@ -24,6 +28,11 @@ type sitePayload struct {
 	Strategy    string `json:"strategy"`
 	Status      string `json:"status"`
 	Runtime     any    `json:"runtime"`
+	Repository  *struct {
+		Provider string `json:"provider"`
+		CloneURL string `json:"clone_url"`
+		Branch   string `json:"branch"`
+	} `json:"repository"`
 }
 
 func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
@@ -221,13 +230,30 @@ func (s *Server) discoverSites(ctx context.Context) ([]webstation.DiscoveredSite
 }
 
 func (s *Server) prepareSiteInput(ctx context.Context, payload sitePayload) (sites.Input, map[string]any, error) {
+	hostname := strings.TrimSpace(payload.Hostname)
+	if strings.TrimSpace(payload.URL) != "" {
+		parsed, err := url.Parse(strings.TrimSpace(payload.URL))
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" {
+			return sites.Input{}, nil, fmt.Errorf("site URL must be a valid http or https URL")
+		}
+		if hostname == "" {
+			hostname = parsed.Hostname()
+		}
+	}
 	projectRoot, err := pathsecurity.CanonicalDirectory(payload.ProjectRoot)
 	if err != nil {
 		return sites.Input{}, nil, fmt.Errorf("project root: %w", err)
 	}
+	detectionResult, err := (detection.Registry{}).Detect(projectRoot)
+	if err != nil {
+		return sites.Input{}, nil, err
+	}
 	webRoot := payload.WebRoot
 	if webRoot == "" {
 		webRoot = projectRoot
+		if detectionResult.DocumentRoot != "" {
+			webRoot = filepath.Join(projectRoot, filepath.FromSlash(detectionResult.DocumentRoot))
+		}
 	}
 	webRoot, err = pathsecurity.CanonicalDirectory(webRoot)
 	if err != nil {
@@ -241,8 +267,8 @@ func (s *Server) prepareSiteInput(ctx context.Context, payload sitePayload) (sit
 		return sites.Input{}, nil, err
 	}
 	framework := payload.Framework
-	if framework == "" {
-		framework = "unknown"
+	if framework == "" || framework == "auto" {
+		framework = detectionResult.Framework
 	}
 	strategy := payload.Strategy
 	if strategy == "" {
@@ -256,19 +282,35 @@ func (s *Server) prepareSiteInput(ctx context.Context, payload sitePayload) (sit
 		status = "permission_required"
 	}
 	runtime := map[string]any{"permissions": permission}
+	runtime["detection"] = detectionResult
+	if payload.URL != "" {
+		runtime["url"] = payload.URL
+	}
 	if payload.Runtime != nil {
 		runtime["metadata"] = payload.Runtime
 	}
 	return sites.Input{
 		Name:        payload.Name,
-		Slug:        normalizeSlug(payload.Slug, payload.Name, payload.Hostname),
-		Hostname:    payload.Hostname,
+		Slug:        normalizeSlug(payload.Slug, payload.Name, hostname),
+		Hostname:    hostname,
 		ProjectRoot: projectRoot,
 		WebRoot:     webRoot,
 		Framework:   framework,
 		Strategy:    strategy,
 		Status:      status,
+		Repository:  repositoryInput(payload.Repository),
 	}, runtime, nil
+}
+
+func repositoryInput(payload *struct {
+	Provider string `json:"provider"`
+	CloneURL string `json:"clone_url"`
+	Branch   string `json:"branch"`
+}) *sites.RepositoryInput {
+	if payload == nil {
+		return nil
+	}
+	return &sites.RepositoryInput{Provider: payload.Provider, CloneURL: payload.CloneURL, Branch: payload.Branch}
 }
 
 func discoveredInput(candidate webstation.DiscoveredSite) sites.Input {

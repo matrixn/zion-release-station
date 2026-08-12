@@ -30,6 +30,24 @@ type Site struct {
 	CreatedAt   string          `json:"created_at"`
 	UpdatedAt   string          `json:"updated_at"`
 	ArchivedAt  *string         `json:"archived_at,omitempty"`
+	Repository  *Repository     `json:"repository,omitempty"`
+}
+
+type Repository struct {
+	ID           string  `json:"id"`
+	SiteID       string  `json:"site_id"`
+	Provider     string  `json:"provider"`
+	CloneURL     string  `json:"clone_url"`
+	Branch       string  `json:"branch"`
+	CredentialID *string `json:"credential_id,omitempty"`
+	CreatedAt    string  `json:"created_at"`
+	UpdatedAt    string  `json:"updated_at"`
+}
+
+type RepositoryInput struct {
+	Provider string
+	CloneURL string
+	Branch   string
 }
 
 type Input struct {
@@ -42,6 +60,7 @@ type Input struct {
 	Strategy    string
 	Status      string
 	Runtime     any
+	Repository  *RepositoryInput
 }
 
 type Store struct {
@@ -57,8 +76,6 @@ func (s *Store) List(ctx context.Context) ([]Site, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list sites: %w", err)
 	}
-	defer rows.Close()
-
 	var result []Site
 	for rows.Next() {
 		var site Site
@@ -72,7 +89,16 @@ func (s *Store) List(ctx context.Context) ([]Site, error) {
 		result = append(result, site)
 	}
 	if err := rows.Err(); err != nil {
+		rows.Close()
 		return nil, fmt.Errorf("iterate sites: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("close sites: %w", err)
+	}
+	for index := range result {
+		if err := s.attachRepository(ctx, &result[index]); err != nil {
+			return nil, err
+		}
 	}
 	return result, nil
 }
@@ -89,6 +115,9 @@ func (s *Store) Get(ctx context.Context, id string) (Site, error) {
 	}
 	if runtime != "" {
 		site.Runtime = json.RawMessage(runtime)
+	}
+	if err := s.attachRepository(ctx, &site); err != nil {
+		return Site{}, err
 	}
 	return site, nil
 }
@@ -122,6 +151,12 @@ func (s *Store) Create(ctx context.Context, input Input) (Site, error) {
 	if err != nil {
 		return Site{}, fmt.Errorf("create site: %w", err)
 	}
+	if input.Repository != nil {
+		if err := s.SaveRepository(ctx, id, *input.Repository); err != nil {
+			_, _ = s.db.ExecContext(ctx, `DELETE FROM sites WHERE id = ?`, id)
+			return Site{}, err
+		}
+	}
 	return s.Get(ctx, id)
 }
 
@@ -140,7 +175,52 @@ func (s *Store) Update(ctx context.Context, id string, input Input) (Site, error
 	if count, _ := result.RowsAffected(); count == 0 {
 		return Site{}, ErrNotFound
 	}
+	if input.Repository != nil {
+		if err := s.SaveRepository(ctx, id, *input.Repository); err != nil {
+			return Site{}, err
+		}
+	}
 	return s.Get(ctx, id)
+}
+
+func (s *Store) GetRepository(ctx context.Context, siteID string) (*Repository, error) {
+	var repository Repository
+	err := s.db.QueryRowContext(ctx, `SELECT id, site_id, provider, clone_url, branch, credential_id, created_at, updated_at FROM repositories WHERE site_id = ?`, siteID).Scan(&repository.ID, &repository.SiteID, &repository.Provider, &repository.CloneURL, &repository.Branch, &repository.CredentialID, &repository.CreatedAt, &repository.UpdatedAt)
+	if err == sql.ErrNoRows {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("get repository: %w", err)
+	}
+	return &repository, nil
+}
+
+func (s *Store) SaveRepository(ctx context.Context, siteID string, input RepositoryInput) error {
+	if err := validateRepository(input); err != nil {
+		return err
+	}
+	id, err := newRepositoryID()
+	if err != nil {
+		return err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO repositories(id, site_id, provider, clone_url, branch, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(site_id) DO UPDATE SET provider = excluded.provider, clone_url = excluded.clone_url, branch = excluded.branch, updated_at = excluded.updated_at`, id, siteID, strings.ToLower(strings.TrimSpace(input.Provider)), strings.TrimSpace(input.CloneURL), strings.TrimSpace(input.Branch), now, now)
+	if err != nil {
+		return fmt.Errorf("save repository: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) attachRepository(ctx context.Context, site *Site) error {
+	repository, err := s.GetRepository(ctx, site.ID)
+	if errors.Is(err, ErrNotFound) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	site.Repository = repository
+	return nil
 }
 
 func (s *Store) Archive(ctx context.Context, id string) error {
@@ -170,6 +250,25 @@ func validateInput(input Input) error {
 	if input.Strategy != "in_place" && input.Strategy != "atomic" {
 		return fmt.Errorf("strategy must be in_place or atomic")
 	}
+	if input.Repository != nil {
+		if err := validateRepository(*input.Repository); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func validateRepository(input RepositoryInput) error {
+	provider := strings.ToLower(strings.TrimSpace(input.Provider))
+	if provider != "github" && provider != "gitlab" && provider != "bitbucket" && provider != "generic" {
+		return fmt.Errorf("repository provider must be github, gitlab, bitbucket or generic")
+	}
+	if strings.TrimSpace(input.CloneURL) == "" {
+		return fmt.Errorf("repository URL is required")
+	}
+	if strings.TrimSpace(input.Branch) == "" {
+		return fmt.Errorf("repository branch is required")
+	}
 	return nil
 }
 
@@ -190,4 +289,12 @@ func newID() (string, error) {
 		return "", fmt.Errorf("generate site id: %w", err)
 	}
 	return "site_" + hex.EncodeToString(value[:]), nil
+}
+
+func newRepositoryID() (string, error) {
+	var value [16]byte
+	if _, err := rand.Read(value[:]); err != nil {
+		return "", fmt.Errorf("generate repository id: %w", err)
+	}
+	return "repo_" + hex.EncodeToString(value[:]), nil
 }
