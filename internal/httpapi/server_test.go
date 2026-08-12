@@ -94,3 +94,46 @@ func TestWebAccessSettingHidesWebWorkspace(t *testing.T) {
 		t.Fatalf("expected workspace after re-enable, got %d %q", recorder.Code, recorder.Body.String())
 	}
 }
+
+func TestWebStationDiscoveryAndSiteCRUDAPI(t *testing.T) {
+	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	webStationRoot := t.TempDir()
+	siteRoot := filepath.Join(webStationRoot, "example.test")
+	for _, relative := range []string{"wp-config.php", "wp-admin/index.php", "wp-content/index.php"} {
+		path := filepath.Join(siteRoot, filepath.FromSlash(relative))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(path, []byte("test"), 0o644); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+	server := NewServer(config.Config{WebRoot: t.TempDir(), WebStationRoots: []string{webStationRoot}, Version: "0.1.0-test"}, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPost, "/releasestation/api/v1/webstation/discover", nil)
+	server.http.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"framework":"wordpress"`) {
+		t.Fatalf("unexpected discovery response: %d %q", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPost, "/releasestation/api/v1/webstation/import", strings.NewReader(`{"paths":["`+siteRoot+`"]}`))
+	request.Header.Set("Content-Type", "application/json")
+	server.http.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"imported"`) {
+		t.Fatalf("unexpected import response: %d %q", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/releasestation/api/v1/sites", nil)
+	server.http.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"hostname":"example.test"`) {
+		t.Fatalf("unexpected sites response: %d %q", recorder.Code, recorder.Body.String())
+	}
+}

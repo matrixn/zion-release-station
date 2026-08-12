@@ -7,18 +7,20 @@ import (
 )
 
 type Config struct {
-	BindAddress string
-	DataDir     string
-	WebRoot     string
-	Version     string
+	BindAddress     string
+	DataDir         string
+	WebRoot         string
+	WebStationRoots []string
+	Version         string
 }
 
 func Load() Config {
 	return Config{
-		BindAddress: envOrDefault("RS_BIND_ADDRESS", "127.0.0.1:24871"),
-		DataDir:     envOrDefault("RS_DATA_DIR", "./var"),
-		WebRoot:     envOrDefault("RS_WEB_ROOT", "./web"),
-		Version:     envOrDefault("RS_VERSION", "0.1.0"),
+		BindAddress:     envOrDefault("RS_BIND_ADDRESS", "127.0.0.1:24871"),
+		DataDir:         envOrDefault("RS_DATA_DIR", "./var"),
+		WebRoot:         envOrDefault("RS_WEB_ROOT", "./web"),
+		WebStationRoots: envListOrDefault("RS_WEB_STATION_ROOTS", []string{"/volume1/www", "/volume1/web"}),
+		Version:         envOrDefault("RS_VERSION", "0.1.0"),
 	}
 }
 
@@ -51,4 +53,22 @@ func envOrDefault(name, fallback string) string {
 		return value
 	}
 	return fallback
+}
+
+func envListOrDefault(name string, fallback []string) []string {
+	value := os.Getenv(name)
+	if value == "" {
+		return append([]string(nil), fallback...)
+	}
+
+	var values []string
+	for _, item := range filepath.SplitList(value) {
+		if item != "" {
+			values = append(values, item)
+		}
+	}
+	if len(values) == 0 {
+		return append([]string(nil), fallback...)
+	}
+	return values
 }

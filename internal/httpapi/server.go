@@ -12,19 +12,30 @@ import (
 	"time"
 
 	"github.com/matrixn/zion-release-station/internal/config"
+	"github.com/matrixn/zion-release-station/internal/detection"
+	"github.com/matrixn/zion-release-station/internal/sites"
+	"github.com/matrixn/zion-release-station/internal/webstation"
 )
 
 type Server struct {
-	config config.Config
-	db     *sql.DB
-	logger *slog.Logger
-	http   *http.Server
+	config     config.Config
+	db         *sql.DB
+	logger     *slog.Logger
+	http       *http.Server
+	sites      *sites.Store
+	webStation webstation.WebStationAdapter
 }
 
 const webAccessSettingKey = "web_access_enabled"
 
 func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
-	server := &Server{config: cfg, db: db, logger: logger}
+	server := &Server{
+		config:     cfg,
+		db:         db,
+		logger:     logger,
+		sites:      sites.NewStore(db),
+		webStation: webstation.NewFilesystemAdapter(cfg.WebStationRoots, detection.Registry{}),
+	}
 	if _, err := db.Exec(`INSERT OR IGNORE INTO settings(key, value_json, updated_at) VALUES (?, 'true', datetime('now'))`, webAccessSettingKey); err != nil {
 		logger.Error("initialize web access setting", "error", err)
 	}
@@ -38,6 +49,8 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 	mux.HandleFunc("/api/v1/system/info", server.handleInfo)
 	mux.HandleFunc("/api/v1/system/capabilities", server.handleCapabilities)
 	mux.HandleFunc("/api/v1/settings/web-access", server.handleWebAccess)
+	server.registerSiteRoutes(mux, "/releasestation/api/v1")
+	server.registerSiteRoutes(mux, "/api/v1")
 	mux.Handle("/releasestation/", server.staticHandler())
 	server.http = &http.Server{
 		Addr:              cfg.BindAddress,
@@ -45,6 +58,14 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	return server
+}
+
+func (s *Server) registerSiteRoutes(mux *http.ServeMux, prefix string) {
+	mux.HandleFunc(prefix+"/sites", s.handleSites)
+	mux.HandleFunc(prefix+"/sites/", s.handleSites)
+	mux.HandleFunc(prefix+"/webstation/status", s.handleWebStationStatus)
+	mux.HandleFunc(prefix+"/webstation/discover", s.handleWebStationDiscover)
+	mux.HandleFunc(prefix+"/webstation/import", s.handleWebStationImport)
 }
 
 func (s *Server) ListenAndServe() error {
