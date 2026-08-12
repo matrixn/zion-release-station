@@ -18,6 +18,14 @@
       "presentation": { "reveal": "always", "panel": "dedicated" }
     },
     {
+      "label": "Zion Connector: Deploy to Synology",
+      "type": "shell",
+      "command": "./scripts/deploy-connector-nas.sh",
+      "group": "build",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "dedicated", "focus": true, "clear": true }
+    },
+    {
       "label": "ReleaseStation: Deploy SPK to DS1019+",
       "type": "shell",
       "command": "make deploy-nas",
