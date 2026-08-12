@@ -1,0 +1,29 @@
+{
+  "name": "zion/zion-connector",
+  "description": "Managed GitHub connector for Zion ReleaseStation",
+  "type": "project",
+  "require": {
+    "php": ">=8.2",
+    "ext-curl": "*",
+    "ext-openssl": "*",
+    "ext-pdo": "*",
+    "ext-pdo_sqlite": "*"
+  },
+  "require-dev": {
+    "phpunit/phpunit": "^11.5"
+  },
+  "autoload": {
+    "psr-4": {
+      "ZionConnector\\": "src/"
+    }
+  },
+  "autoload-dev": {
+    "psr-4": {
+      "ZionConnector\\Tests\\": "tests/"
+    }
+  },
+  "scripts": {
+    "test": "phpunit --testdox",
+    "lint": "find src public tests -type f -name '*.php' -print0 | xargs -0 -n1 php -l"
+  }
+}

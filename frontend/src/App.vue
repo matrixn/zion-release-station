@@ -116,7 +116,7 @@ const wizardForm = ref({
   githubFullName: '',
   githubDefaultBranch: '',
 });
-const githubState = ref<GithubState>({ configured: false, mode: 'self_hosted', configuration_error: '', connected: false, app_slug: '', setup_url: '', installations: [] });
+const githubState = ref<GithubState>({ configured: false, mode: 'managed', configuration_error: '', connected: false, app_slug: '', setup_url: '', installations: [] });
 const githubRepositories = ref<GithubRepository[]>([]);
 const githubLoading = ref(false);
 const githubAccount = ref('');
@@ -127,7 +127,7 @@ const githubConnectState = ref<'idle' | 'starting' | 'waiting'>('idle');
 let githubPollTimer: ReturnType<typeof setInterval> | undefined;
 
 function emptyGithubState(): GithubState {
-  return { configured: false, mode: 'self_hosted', configuration_error: 'GitHub connector API unavailable', connected: false, app_slug: '', setup_url: '', installations: [] };
+  return { configured: false, mode: 'managed', configuration_error: 'Zion Connector is not provisioned for this ReleaseStation instance', connected: false, app_slug: '', setup_url: '', installations: [] };
 }
 
 const navItems = computed(() => [

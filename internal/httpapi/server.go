@@ -13,7 +13,6 @@ import (
 
 	"github.com/matrixn/zion-release-station/internal/config"
 	"github.com/matrixn/zion-release-station/internal/detection"
-	"github.com/matrixn/zion-release-station/internal/githubapp"
 	"github.com/matrixn/zion-release-station/internal/githubconnector"
 	"github.com/matrixn/zion-release-station/internal/sites"
 	"github.com/matrixn/zion-release-station/internal/webstation"
@@ -26,8 +25,6 @@ type Server struct {
 	http          *http.Server
 	sites         *sites.Store
 	webStation    webstation.WebStationAdapter
-	github        *githubapp.Client
-	githubStore   *githubapp.Store
 	githubManaged *githubconnector.Client
 }
 
@@ -40,11 +37,8 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 		logger:        logger,
 		sites:         sites.NewStore(db),
 		webStation:    webstation.NewFilesystemAdapter(cfg.WebStationRoots, detection.Registry{}),
-		github:        githubapp.NewClient(cfg),
-		githubStore:   githubapp.NewStore(db),
 		githubManaged: githubconnector.NewClient(cfg),
 	}
-	server.loadGitHubAppSettings()
 	if _, err := db.Exec(`INSERT OR IGNORE INTO settings(key, value_json, updated_at) VALUES (?, 'true', datetime('now'))`, webAccessSettingKey); err != nil {
 		logger.Error("initialize web access setting", "error", err)
 	}
@@ -73,10 +67,7 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 
 func (s *Server) registerIntegrationRoutes(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc(prefix+"/integrations/github", s.handleGitHubConnection)
-	mux.HandleFunc(prefix+"/integrations/github/config", s.handleGitHubConfig)
-	mux.HandleFunc(prefix+"/integrations/github/private-key", s.handleGitHubPrivateKey)
 	mux.HandleFunc(prefix+"/integrations/github/install", s.handleGitHubInstall)
-	mux.HandleFunc(prefix+"/integrations/github/setup", s.handleGitHubSetup)
 	mux.HandleFunc(prefix+"/integrations/github/repositories", s.handleGitHubRepositories)
 	mux.HandleFunc(prefix+"/integrations/github/repositories/", s.handleGitHubRepositories)
 }

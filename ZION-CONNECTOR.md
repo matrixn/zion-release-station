@@ -35,7 +35,7 @@ RS_GITHUB_CONNECTOR_TOKEN=credential-issued-for-this-instance
 RS_PUBLIC_URL=https://nas.example.com
 ```
 
-Dacă variabilele managed lipsesc, aplicația folosește în continuare modul `self_hosted`, cu App ID și `.pem` configurate local.
+Dacă variabilele managed lipsesc, butonul rămâne vizibil, dar acțiunea va indica faptul că instanța nu este încă provisionată de serviciul Zion. Nu există fallback local cu App ID sau `.pem`.
 
 ## Contractul HTTP obligatoriu
 
@@ -345,7 +345,7 @@ zion-connector/
 │   ├── github.go
 │   ├── callback.go
 │   └── health.go
-├── internal/githubapp/
+├── internal/github/
 │   ├── client.go
 │   ├── jwt.go
 │   └── oauth.go

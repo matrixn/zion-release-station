@@ -121,7 +121,7 @@
         healthState: 'checking',
         webAccessEnabled: true,
         webAccessState: 'loading',
-        github: {},
+        github: { mode: 'managed', configured: false, connected: false, installations: [], configuration_error: 'Zion Connector is not provisioned for this ReleaseStation instance' },
         githubConfig: { app_id: '', app_slug: '', setup_url: '' },
         githubConfigState: 'loading',
         githubMessage: ''
@@ -217,7 +217,7 @@
             self.githubConfig = { app_id: self.github.app_id || '', app_slug: self.github.app_slug || '', setup_url: self.github.setup_url || (window.location.origin + '/releasestation/api/v1/integrations/github/setup') };
             self.githubConfigState = 'saved';
           })
-          .catch(function () { self.github = {}; self.githubConfigState = 'error'; self.githubMessage = 'Nu am putut citi starea GitHub App.'; });
+          .catch(function () { self.github = { mode: 'managed', configured: false, connected: false, installations: [], configuration_error: 'Zion Connector is not provisioned for this ReleaseStation instance' }; self.githubConfigState = 'error'; self.githubMessage = 'Zion Connector nu este provisionat pentru această instanță.'; });
       },
       saveGithubConfig: function () {
         var self = this;

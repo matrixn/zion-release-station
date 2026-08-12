@@ -13,12 +13,20 @@ func TestOpenAppliesFoundationMigration(t *testing.T) {
 	}
 	defer db.Close()
 
-	var version string
-	if err := db.QueryRow(`SELECT version FROM schema_migrations`).Scan(&version); err != nil {
-		t.Fatalf("read migration version: %v", err)
+	var migrationCount int
+	if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
+		t.Fatalf("read migration count: %v", err)
 	}
-	if version != "0001_foundation" {
-		t.Fatalf("unexpected migration version %q", version)
+	if migrationCount != 3 {
+		t.Fatalf("unexpected migration count %d", migrationCount)
+	}
+
+	var managedCleanupApplied int
+	if err := db.QueryRow(`SELECT count(*) FROM schema_migrations WHERE version = '0003_managed_github_only'`).Scan(&managedCleanupApplied); err != nil {
+		t.Fatalf("read managed GitHub migration: %v", err)
+	}
+	if managedCleanupApplied != 1 {
+		t.Fatal("managed GitHub cleanup migration was not applied")
 	}
 
 	var tableCount int

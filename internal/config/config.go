@@ -11,10 +11,6 @@ type Config struct {
 	DataDir              string
 	WebRoot              string
 	WebStationRoots      []string
-	GitHubAppID          string
-	GitHubAppSlug        string
-	GitHubPrivateKeyPath string
-	GitHubSetupURL       string
 	GitHubConnectorURL   string
 	GitHubConnectorToken string
 	InstanceID           string
@@ -28,10 +24,6 @@ func Load() Config {
 		DataDir:              envOrDefault("RS_DATA_DIR", "./var"),
 		WebRoot:              envOrDefault("RS_WEB_ROOT", "./web"),
 		WebStationRoots:      envListOrDefault("RS_WEB_STATION_ROOTS", []string{"/volume1/www", "/volume1/web"}),
-		GitHubAppID:          os.Getenv("RS_GITHUB_APP_ID"),
-		GitHubAppSlug:        os.Getenv("RS_GITHUB_APP_SLUG"),
-		GitHubPrivateKeyPath: os.Getenv("RS_GITHUB_APP_PRIVATE_KEY_PATH"),
-		GitHubSetupURL:       os.Getenv("RS_GITHUB_SETUP_URL"),
 		GitHubConnectorURL:   os.Getenv("RS_GITHUB_CONNECTOR_URL"),
 		GitHubConnectorToken: os.Getenv("RS_GITHUB_CONNECTOR_TOKEN"),
 		InstanceID:           envOrDefault("RS_INSTANCE_ID", "local"),

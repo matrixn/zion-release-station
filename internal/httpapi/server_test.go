@@ -150,19 +150,19 @@ func TestGitHubConnectionSettingsAPI(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodGet, "/releasestation/api/v1/integrations/github", nil)
 	server.http.Handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"connected":false`) {
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"mode":"managed"`) || !strings.Contains(recorder.Body.String(), `"connected":false`) {
 		t.Fatalf("unexpected initial GitHub status: %d %q", recorder.Code, recorder.Body.String())
 	}
 
 	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodPost, "/releasestation/api/v1/integrations/github/install", nil)
 	server.http.Handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"GITHUB_APP_NOT_CONFIGURED"`) {
+	if recorder.Code != http.StatusServiceUnavailable || !strings.Contains(recorder.Body.String(), `"GITHUB_CONNECTOR_UNAVAILABLE"`) {
 		t.Fatalf("unexpected GitHub install response: %d %q", recorder.Code, recorder.Body.String())
 	}
 }
 
-func TestGitHubAppConfigurationIsManagedByAPI(t *testing.T) {
+func TestLegacyGitHubAppConfigurationRoutesAreRemoved(t *testing.T) {
 	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
@@ -171,26 +171,18 @@ func TestGitHubAppConfigurationIsManagedByAPI(t *testing.T) {
 
 	server := NewServer(config.Config{WebRoot: t.TempDir(), Version: "0.1.0-test"}, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	recorder := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodPut, "/releasestation/api/v1/integrations/github/config", strings.NewReader(`{"app_id":"123","app_slug":"zion-releasestation","setup_url":"https://example.test/releasestation/api/v1/integrations/github/setup"}`))
+	request := httptest.NewRequest(http.MethodPut, "/releasestation/api/v1/integrations/github/config", strings.NewReader(`{"app_id":"123"}`))
 	request.Header.Set("Content-Type", "application/json")
 	server.http.Handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"app_slug":"zion-releasestation"`) {
-		t.Fatalf("unexpected GitHub config response: %d %q", recorder.Code, recorder.Body.String())
-	}
-
-	recorder = httptest.NewRecorder()
-	request = httptest.NewRequest(http.MethodGet, "/releasestation/api/v1/integrations/github", nil)
-	server.http.Handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"app_id":"123"`) || !strings.Contains(recorder.Body.String(), `"private_key_configured":false`) {
-		t.Fatalf("GitHub config was not persisted: %d %q", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected legacy GitHub config route to be removed, got %d %q", recorder.Code, recorder.Body.String())
 	}
 
 	recorder = httptest.NewRecorder()
 	request = httptest.NewRequest(http.MethodPost, "/releasestation/api/v1/integrations/github/private-key", strings.NewReader("not-a-pem"))
-	request.Header.Set("Content-Type", "multipart/form-data")
 	server.http.Handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusBadRequest {
-		t.Fatalf("expected invalid private key upload to fail, got %d %q", recorder.Code, recorder.Body.String())
+	if recorder.Code != http.StatusNotFound {
+		t.Fatalf("expected legacy private key route to be removed, got %d %q", recorder.Code, recorder.Body.String())
 	}
 }
 
