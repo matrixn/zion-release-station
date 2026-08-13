@@ -1491,7 +1491,7 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-if="activeNav === 'Settings'" class="settings-view">
-          <div class="sites-management-header"><div><div class="eyebrow"><span class="eyebrow-pulse" /> WORKSPACE SETTINGS</div><h1>Settings.</h1><p class="hero-copy">Connect the services ReleaseStation uses to discover repositories and deploy sites.</p></div></div>
+          <div class="sites-management-header"><div><div class="eyebrow"><span class="eyebrow-pulse" /> WORKSPACE SETTINGS</div><h1>Settings.</h1><p class="hero-copy">Connect the services Release Station uses to discover repositories and deploy sites.</p></div></div>
           <article class="panel settings-card system-checks-card">
             <div class="settings-card-heading"><span class="settings-icon"><ServerCog :size="18" /></span><div><div class="panel-kicker">SYSTEM OVERVIEW</div><h2>Deployment toolchain checks</h2><p>Selectează ce vrei să verifici live pe NAS și să afișezi în Dashboard. O verificare roșie înseamnă că binarul nu a fost găsit de serviciul Release Station.</p></div></div>
             <div v-if="systemChecksLoading && !systemChecks.length" class="management-empty"><RotateCw :size="18" class="spin" /><span>Loading available checks…</span></div>
@@ -1510,7 +1510,7 @@ onBeforeUnmount(() => {
           </article>
           <article v-if="githubState.mode !== 'managed'" class="panel settings-card">
             <div class="settings-card-heading"><span class="settings-icon"><GitBranch :size="18" /></span><div><div class="panel-kicker">SOURCE CONTROL CONNECTOR</div><h2>GitHub App</h2><p>Instalează App-ul GitHub și selectează explicit unul sau mai multe repository-uri, inclusiv private.</p></div><span class="connection-badge" :class="{ connected: githubState.connected }"><span class="status-dot" />{{ githubState.connected ? 'Connected' : 'Not connected' }}</span></div>
-            <div class="settings-form"><div class="connector-status"><span class="status-dot" :class="{ 'status-dot-warning': !githubState.configured }" /><strong>{{ githubState.configured ? 'App credentials detected on NAS' : 'App credentials are not configured' }}</strong><small v-if="githubState.configuration_error">{{ githubState.configuration_error }}</small><small v-else>App: {{ githubState.app_slug }}</small></div><p class="settings-explanation">Private repository access is granted in GitHub during installation. ReleaseStation receives only short-lived installation tokens and never stores a PAT.</p></div>
+            <div class="settings-form"><div class="connector-status"><span class="status-dot" :class="{ 'status-dot-warning': !githubState.configured }" /><strong>{{ githubState.configured ? 'App credentials detected on NAS' : 'App credentials are not configured' }}</strong><small v-if="githubState.configuration_error">{{ githubState.configuration_error }}</small><small v-else>App: {{ githubState.app_slug }}</small></div><p class="settings-explanation">Private repository access is granted in GitHub during installation. Release Station receives only short-lived installation tokens and never stores a PAT.</p></div>
             <div v-if="githubError" class="discovery-error"><CircleAlert :size="16" />{{ githubError }}</div><div v-if="githubMessage" class="discovery-success"><Check :size="16" />{{ githubMessage }}</div>
             <div class="settings-actions"><span /><button class="button button-secondary" type="button" @click="loadGithubStatus">Refresh status</button><button v-if="githubState.configured" class="button button-primary" type="button" @click="installGithubApp">Install / manage GitHub App <ArrowUpRight :size="14" /></button></div>
             <div class="settings-note"><CircleHelp :size="15" /><span>Setează Setup URL-ul GitHub App la <code>{{ githubState.setup_url || '/releasestation/api/v1/integrations/github/setup' }}</code>, apoi folosește butonul de mai sus. După instalare, repository-urile private selectate în GitHub apar în wizard.</span></div>
@@ -1527,7 +1527,7 @@ onBeforeUnmount(() => {
           </div>
         </section>
 
-        <footer v-if="activeNav === 'Dashboard'" class="footer-note"><span><ShieldCheck :size="14" />Protected by ReleaseStation guardrails</span><span>v0.1.0 · Foundation milestone</span></footer>
+        <footer v-if="activeNav === 'Dashboard'" class="footer-note"><span><ShieldCheck :size="14" />Protected by Release Station guardrails</span><span>v0.1.0 · Foundation milestone</span></footer>
       </div>
     </main>
 
@@ -1577,9 +1577,9 @@ onBeforeUnmount(() => {
           <div class="wizard-steps" aria-label="Wizard progress"><span v-for="step in 4" :key="step" class="wizard-step" :class="{ active: wizardStep === step, complete: wizardStep > step }"><b>{{ wizardStep > step ? '✓' : step }}</b><small>{{ ['Site', 'Repository', 'Sync', 'Review'][step - 1] }}</small></span></div>
 
           <div v-if="wizardStep === 1" class="wizard-body">
-            <div class="wizard-intro"><Globe2 :size="20" /><div><strong>Where is this site?</strong><span>URL-ul este adresa publică. Căile sunt locațiile reale de pe NAS pe care ReleaseStation le va verifica și actualiza.</span></div></div>
+            <div class="wizard-intro"><Globe2 :size="20" /><div><strong>Where is this site?</strong><span>URL-ul este adresa publică. Căile sunt locațiile reale de pe NAS pe care Release Station le va verifica și actualiza.</span></div></div>
             <div class="form-grid"><label><span>Site name</span><input v-model="wizardForm.name" type="text" placeholder="My WordPress site" /></label><label><span>Public site URL</span><input v-model="wizardForm.url" type="url" placeholder="https://example.com" /></label></div>
-            <label><span>Project root on Synology</span><input v-model="wizardForm.projectRoot" type="text" placeholder="/volume1/www/example.com" /><small>Directorul proiectului, nu URL-ul. Trebuie să existe deja pe NAS și să fie accesibil serviciului ReleaseStation.</small></label>
+            <label><span>Project root on Synology</span><input v-model="wizardForm.projectRoot" type="text" placeholder="/volume1/www/example.com" /><small>Directorul proiectului, nu URL-ul. Trebuie să existe deja pe NAS și să fie accesibil serviciului Release Station.</small></label>
             <label><span>Web/document root <em>optional</em></span><input v-model="wizardForm.webRoot" type="text" placeholder="Auto-detect from framework" /><small>Pentru Laravel, Symfony și Flarum se folosește automat <code>public/</code> dacă lași câmpul gol.</small></label>
             <label><span>Framework detection</span><select v-model="wizardForm.framework"><option value="auto">Auto-detect (recommended)</option><option value="wordpress">WordPress</option><option value="laravel">Laravel</option><option value="symfony">Symfony</option><option value="flarum">Flarum</option><option value="node">Node.js</option><option value="php">PHP</option><option value="unknown">Other / unknown</option></select></label>
           </div>
@@ -1595,7 +1595,7 @@ onBeforeUnmount(() => {
           <div v-else-if="wizardStep === 3" class="wizard-body">
             <div class="wizard-intro"><RotateCw :size="20" /><div><strong>Cum se sincronizează?</strong><span>Alege comportamentul potrivit pentru infrastructura ta. Poți schimba strategia ulterior când activăm pipeline-ul complet.</span></div></div>
             <div class="strategy-grid"><label class="strategy-card" :class="{ selected: wizardForm.strategy === 'in_place' }"><input v-model="wizardForm.strategy" type="radio" value="in_place" /><span class="strategy-title">In-place <em>recommended</em></span><span>Actualizează directorul existent Web Station. Este potrivit pentru site-urile deja instalate și păstrează structura și datele locale.</span></label><label class="strategy-card" :class="{ selected: wizardForm.strategy === 'atomic' }"><input v-model="wizardForm.strategy" type="radio" value="atomic" /><span class="strategy-title">Atomic releases</span><span>Pregătește release-uri separate și activează unul doar după verificări. Oferă rollback mai sigur, dar necesită layout compatibil cu release-uri.</span></label></div>
-            <div class="wizard-hint"><CircleHelp :size="15" /><span>ReleaseStation nu execută încă sincronizarea la salvarea wizard-ului; acum înregistrează configurația și verifică rădăcinile. Deploy-ul va folosi această alegere.</span></div>
+            <div class="wizard-hint"><CircleHelp :size="15" /><span>Release Station nu execută încă sincronizarea la salvarea wizard-ului; acum înregistrează configurația și verifică rădăcinile. Deploy-ul va folosi această alegere.</span></div>
           </div>
 
           <div v-else class="wizard-body">

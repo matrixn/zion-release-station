@@ -44,6 +44,31 @@ func TestHealthEndpointReportsReadyDatabase(t *testing.T) {
 	}
 }
 
+func TestWorkspaceRouteValidatesConflictsAndPersists(t *testing.T) {
+	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+	server := NewServer(config.Config{WebRoot: t.TempDir(), Version: "0.1.0-test"}, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodPut, "/releasestation/api/v1/settings/workspace", strings.NewReader(`{"route":"/release-station"}`))
+	request.Header.Set("Content-Type", "application/json")
+	server.http.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"route":"/release-station/"`) || !strings.Contains(recorder.Body.String(), `"requires_reload":true`) {
+		t.Fatalf("expected normalized route, got %d %q", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPut, "/releasestation/api/v1/settings/workspace", strings.NewReader(`{"route":"/webman/"}`))
+	request.Header.Set("Content-Type", "application/json")
+	server.http.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusUnprocessableEntity || !strings.Contains(recorder.Body.String(), `"code":"DSM_ROUTE_CONFLICT"`) {
+		t.Fatalf("expected reserved route rejection, got %d %q", recorder.Code, recorder.Body.String())
+	}
+}
+
 func TestSystemOverviewChecksCanBeConfigured(t *testing.T) {
 	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
 	if err != nil {

@@ -4,6 +4,10 @@ Istoricul de mai jos păstrează evoluția proiectului și explică problema sau
 
 ## Unreleased
 
+- **Native DSM control center** — configurația nativă nu mai include conectarea GitHub. Overview-ul pune Runtime în partea de sus, afișează servicii verificate live și oferă acces direct la workspace, Activation și Configuration.
+- **Workspace route validation** — Configuration permite editarea rutei DSM, normalizează slash-urile, respinge traversal/caractere nesigure și detectează conflicte cu rutele rezervate DSM. O schimbare de rută este marcată explicit ca necesitând reload-ul resursei nginx DSM.
+- **Product naming** — suprafețele native, workspace-ul web, statusurile și metadatele de serviciu folosesc denumirea afișată „Release Station”.
+
 - **GitHub push webhooks și auto-deploy** — Zion Connector primește webhook-uri publice, verifică HMAC `X-Hub-Signature-256`, deduplicatează delivery-urile și le asociază cu installation-ul clientului. SPK-ul face polling autentificat, filtrează strict repository-ul/installation-ul/branch-ul și `Push to deploy`, apoi rulează deploy-ul atomic cu trigger `webhook`. Aplicația nativă afișează starea webhook-ului, endpointul și numărul de evenimente acceptate.
 - **Editor de deploy și verificări** — editorul scriptului folosește CodeMirror cu shell syntax highlighting și tema dark; au fost adăugate teste pentru cursorul webhook-ului, deduplicare și contractul connectorului.
 

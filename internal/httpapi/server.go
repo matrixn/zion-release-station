@@ -4,10 +4,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -33,6 +35,7 @@ type Server struct {
 
 const webAccessSettingKey = "web_access_enabled"
 const systemOverviewChecksSettingKey = "system_overview_checks"
+const workspaceRouteSettingKey = "workspace_route"
 
 func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 	server := &Server{
@@ -55,12 +58,14 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 	mux.HandleFunc("/releasestation/api/v1/system/metrics", server.handleMetrics)
 	mux.HandleFunc("/releasestation/api/v1/system/checks", server.handleSystemChecks)
 	mux.HandleFunc("/releasestation/api/v1/settings/web-access", server.handleWebAccess)
+	mux.HandleFunc("/releasestation/api/v1/settings/workspace", server.handleWorkspaceSettings)
 	mux.HandleFunc("/api/v1/system/health", server.handleHealth)
 	mux.HandleFunc("/api/v1/system/info", server.handleInfo)
 	mux.HandleFunc("/api/v1/system/capabilities", server.handleCapabilities)
 	mux.HandleFunc("/api/v1/system/metrics", server.handleMetrics)
 	mux.HandleFunc("/api/v1/system/checks", server.handleSystemChecks)
 	mux.HandleFunc("/api/v1/settings/web-access", server.handleWebAccess)
+	mux.HandleFunc("/api/v1/settings/workspace", server.handleWorkspaceSettings)
 	server.registerSiteRoutes(mux, "/releasestation/api/v1")
 	server.registerSiteRoutes(mux, "/api/v1")
 	server.registerIntegrationRoutes(mux, "/releasestation/api/v1")
@@ -68,10 +73,25 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 	mux.Handle("/releasestation/", server.staticHandler())
 	server.http = &http.Server{
 		Addr:              cfg.BindAddress,
-		Handler:           withSecurityHeaders(withRequestLogging(mux, logger)),
+		Handler:           withSecurityHeaders(withRequestLogging(server.workspaceRouteHandler(mux), logger)),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	return server
+}
+
+// workspaceRouteHandler keeps the API and SPA contract stable when the DSM
+// resource forwards a custom validated route to the local service.
+func (s *Server) workspaceRouteHandler(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		route, err := s.workspaceRoute(r.Context())
+		if err == nil && route != "/releasestation/" && strings.HasPrefix(r.URL.Path, route) {
+			cloned := r.Clone(r.Context())
+			cloned.URL.Path = "/releasestation/" + strings.TrimPrefix(r.URL.Path, route)
+			next.ServeHTTP(w, cloned)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func (s *Server) registerIntegrationRoutes(mux *http.ServeMux, prefix string) {
@@ -135,7 +155,7 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
-		"product":      "Zion ReleaseStation",
+		"product":      "Zion Release Station",
 		"package":      "zion-releasestation",
 		"version":      s.config.Version,
 		"bind_address": s.config.BindAddress,
@@ -254,6 +274,82 @@ func (s *Server) handleWebAccess(w http.ResponseWriter, r *http.Request) {
 	default:
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only GET and PUT are supported.")
 	}
+}
+
+func (s *Server) handleWorkspaceSettings(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		route, err := s.workspaceRoute(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "SETTINGS_UNAVAILABLE", "Unable to read workspace settings.")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+			"route": route, "active_route": "/releasestation/", "default_route": "/releasestation/", "requires_reload": route != "/releasestation/",
+		}})
+	case http.MethodPut:
+		var payload struct {
+			Route string `json:"route"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_ROUTE", "DSM Route must be a valid path.")
+			return
+		}
+		route, reason := normalizeWorkspaceRoute(payload.Route)
+		if reason != "" {
+			writeError(w, http.StatusUnprocessableEntity, "DSM_ROUTE_CONFLICT", reason)
+			return
+		}
+		encoded, _ := json.Marshal(route)
+		if _, err := s.db.ExecContext(r.Context(), `INSERT INTO settings(key, value_json, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`, workspaceRouteSettingKey, string(encoded)); err != nil {
+			writeError(w, http.StatusInternalServerError, "SETTINGS_UNAVAILABLE", "Unable to save workspace settings.")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+			"route": route, "active_route": "/releasestation/", "default_route": "/releasestation/", "requires_reload": route != "/releasestation/",
+		}})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only GET and PUT are supported.")
+	}
+}
+
+func (s *Server) workspaceRoute(ctx context.Context) (string, error) {
+	var value string
+	if err := s.db.QueryRowContext(ctx, `SELECT value_json FROM settings WHERE key = ?`, workspaceRouteSettingKey).Scan(&value); err != nil {
+		return "", err
+	}
+	var route string
+	if err := json.Unmarshal([]byte(value), &route); err != nil {
+		return "", err
+	}
+	normalized, reason := normalizeWorkspaceRoute(route)
+	if reason != "" {
+		return "", fmt.Errorf("stored workspace route is invalid: %s", reason)
+	}
+	return normalized, nil
+}
+
+func normalizeWorkspaceRoute(value string) (string, string) {
+	route := strings.TrimSpace(value)
+	if route == "" {
+		return "", "DSM Route is required."
+	}
+	if !strings.HasPrefix(route, "/") {
+		return "", "DSM Route must start with '/'."
+	}
+	route = "/" + strings.Trim(route, "/") + "/"
+	if len(route) > 64 || strings.Contains(route, "..") || strings.ContainsAny(route, "?&#%\\\\\"'") {
+		return "", "DSM Route contains invalid characters or is too long."
+	}
+	if route == "//" || !regexp.MustCompile(`^/[A-Za-z0-9][A-Za-z0-9/_-]*/$`).MatchString(route) {
+		return "", "DSM Route may contain only letters, numbers, '/', '-' and '_'."
+	}
+	for _, reserved := range []string{"/", "/api/", "/webapi/", "/webman/", "/dsm/", "/file/", "/packagecenter/"} {
+		if strings.EqualFold(route, reserved) || (reserved != "/" && strings.HasPrefix(strings.ToLower(route), strings.TrimSuffix(reserved, "/")+"/")) {
+			return "", "DSM Route conflicts with a reserved DSM path."
+		}
+	}
+	return route, ""
 }
 
 func (s *Server) webAccessEnabled(ctx context.Context) (bool, error) {
