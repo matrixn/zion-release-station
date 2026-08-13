@@ -76,7 +76,7 @@ func TestDeployGitHubExtractsAndSwitchesCurrentAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read deployment history: %v", err)
 	}
-	if deployment.Status != "deployed" || deployment.DeploymentMethod != "manual" || deployment.BuildLog == "" || deployment.DeploymentLog == "" {
+	if deployment.Status != "deployed" || deployment.DeploymentMethod != "manual" || deployment.BuildLog == "" || deployment.DeploymentLog == "" || len(deployment.Steps) != 3 {
 		t.Fatalf("unexpected deployment history: %#v", deployment)
 	}
 }
@@ -131,7 +131,7 @@ func TestDefaultAtomicScriptPublishesSingleRepositoryDirectoryToDocumentRoot(t *
 	}
 
 	site := sites.Site{ID: "site_default", ProjectRoot: root, WebRoot: root, Strategy: "atomic"}
-	logs := newDeploymentLogs()
+	logs := newDeploymentLogs(NewEventHub(), "dep_test")
 	if err := runDeploymentScript(context.Background(), site, current, current, "dep_test", "rel_test", "sha", logs); err != nil {
 		t.Fatalf("run default deployment script: %v", err)
 	}

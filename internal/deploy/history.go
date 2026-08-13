@@ -7,7 +7,7 @@ import (
 	"math"
 )
 
-const deploymentColumns = `id, site_id, trigger_type, COALESCE(branch, ''), COALESCE(commit_sha, ''), COALESCE(commit_message, ''), COALESCE(commit_url, ''), deployment_method, status, COALESCE(error_code, ''), COALESCE(error_summary, ''), queued_at, COALESCE(started_at, ''), COALESCE(finished_at, ''), COALESCE(duration_ms, 0), created_at`
+const deploymentColumns = `id, site_id, trigger_type, COALESCE(trigger_reference, ''), COALESCE(branch, ''), COALESCE(commit_sha, ''), COALESCE(commit_message, ''), COALESCE(commit_url, ''), deployment_method, status, COALESCE(error_code, ''), COALESCE(error_summary, ''), queued_at, COALESCE(started_at, ''), COALESCE(finished_at, ''), COALESCE(duration_ms, 0), created_at`
 
 func (r *Runner) ListDeployments(ctx context.Context, siteID, search string, page, perPage int) (Page, error) {
 	if page < 1 {
@@ -30,7 +30,7 @@ func (r *Runner) ListDeployments(ctx context.Context, siteID, search string, pag
 	items := make([]Deployment, 0)
 	for rows.Next() {
 		var item Deployment
-		if err := rows.Scan(&item.ID, &item.SiteID, &item.TriggerType, &item.Branch, &item.CommitSHA, &item.CommitMessage, &item.CommitURL, &item.DeploymentMethod, &item.Status, &item.ErrorCode, &item.ErrorSummary, &item.QueuedAt, &item.StartedAt, &item.FinishedAt, &item.DurationMS, &item.CreatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.SiteID, &item.TriggerType, &item.TriggerReference, &item.Branch, &item.CommitSHA, &item.CommitMessage, &item.CommitURL, &item.DeploymentMethod, &item.Status, &item.ErrorCode, &item.ErrorSummary, &item.QueuedAt, &item.StartedAt, &item.FinishedAt, &item.DurationMS, &item.CreatedAt); err != nil {
 			return Page{}, fmt.Errorf("scan deployment: %w", err)
 		}
 		items = append(items, item)
@@ -65,6 +65,9 @@ func (r *Runner) GetDeployment(ctx context.Context, siteID, deploymentID string)
 		} else if channel == "deployment" {
 			item.DeploymentLog = content
 		}
+	}
+	if item.Steps, err = readDeploymentSteps(ctx, r.db, deploymentID); err != nil {
+		return Deployment{}, err
 	}
 	return item, rows.Err()
 }

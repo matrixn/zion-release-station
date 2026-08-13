@@ -82,8 +82,8 @@ type GithubRepository = {
   ssh_url: string;
 };
 type GithubInstallation = { github_installation_id: number; account_login: string; account_type: string; repository_selection: string; };
-type Deployment = { id: string; site_id: string; trigger_type: string; deployment_method?: string; branch: string; commit_sha: string; commit_message: string; commit_url: string; status: string; error_code?: string; error_summary?: string; queued_at: string; started_at?: string; finished_at?: string; duration_ms?: number; created_at: string; build_log?: string; deployment_log?: string; };
-type Commit = { sha: string; message: string; branch: string; author?: string; url?: string; created_at?: string; deployed: boolean; deployment_id?: string; status: string; };
+type Deployment = { id: string; site_id: string; trigger_type: string; trigger_reference?: string; deployment_method?: string; branch: string; commit_sha: string; commit_message: string; commit_url: string; status: string; error_code?: string; error_summary?: string; queued_at: string; started_at?: string; finished_at?: string; duration_ms?: number; created_at: string; build_log?: string; deployment_log?: string; steps?: { id: string; step_key: string; name: string; status: string; duration_ms?: number }[]; };
+type Commit = { sha: string; message: string; branch: string; author?: string; url?: string; created_at?: string; deployed: boolean; included_in_deployed?: boolean; deployment_id?: string; status: string; };
 
 type GithubState = {
   configured: boolean;
@@ -219,11 +219,13 @@ type DashboardMetrics = {
   total_deploys: number;
   median_duration_ms: number;
   running_deploys: number;
+  queued_deploys: number;
   queue_status: string;
-  latest?: { site_id: string; site_name: string; status: string; branch: string; commit_sha: string; commit_message: string; created_at: string; duration_ms: number };
+  latest?: { deployment_id: string; site_id: string; site_name: string; status: string; branch: string; commit_sha: string; commit_message: string; created_at: string; duration_ms: number };
   services: { id: string; label: string; state: string; detail: string; command?: string; description?: string; install_hint?: string; version?: string }[];
 };
-const dashboardMetrics = ref<DashboardMetrics>({ successful_deploys: 0, total_deploys: 0, median_duration_ms: 0, running_deploys: 0, queue_status: 'idle', services: [] });
+const dashboardMetrics = ref<DashboardMetrics>({ successful_deploys: 0, total_deploys: 0, median_duration_ms: 0, running_deploys: 0, queued_deploys: 0, queue_status: 'idle', services: [] });
+const deploymentNotice = ref<{ id: string; siteID: string; siteName: string; status: string; progress: number; message: string } | null>(null);
 type SystemCheckSetting = { id: string; label: string; command: string; description: string; install_hint: string; enabled: boolean };
 const systemChecks = ref<SystemCheckSetting[]>([]);
 const systemChecksLoading = ref(false);
@@ -241,6 +243,8 @@ let githubPollTimer: ReturnType<typeof setInterval> | undefined;
 let importCloseTimer: ReturnType<typeof setTimeout> | undefined;
 let dashboardRefreshTimer: ReturnType<typeof setInterval> | undefined;
 let deploymentToastTimer: ReturnType<typeof setTimeout> | undefined;
+let deploymentEventSource: EventSource | undefined;
+let deploymentNoticeTimer: ReturnType<typeof setTimeout> | undefined;
 let githubPairingSessionId = '';
 let githubPairingToken = '';
 let githubPairingHandled = false;
@@ -472,7 +476,13 @@ async function loadDashboardMetrics() {
     const response = await fetch('/releasestation/api/v1/system/metrics', { headers: { Accept: 'application/json' } });
     if (!response.ok) throw new Error('metrics');
     const payload = await response.json();
-    dashboardMetrics.value = payload.data || dashboardMetrics.value;
+    const next = payload.data || dashboardMetrics.value;
+    const latest = next.latest;
+    if (latest?.deployment_id && !deploymentTerminal(latest.status) && deploymentNotice.value?.id !== latest.deployment_id) {
+      setDeploymentNotice(latest.deployment_id, latest.site_id, latest.site_name, latest.status, 'Deployment is running. Click to follow live logs.');
+      watchDeploymentStream(latest.deployment_id, latest.site_id);
+    }
+    dashboardMetrics.value = next;
   } catch {
     // Keep the last known values visible when a single polling request fails.
   }
@@ -809,11 +819,87 @@ async function openDeploymentDetails(deployment: Deployment) {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error?.message || 'Could not load deployment details.');
     selectedDeployment.value = payload.data;
+    if (!deploymentTerminal(selectedDeployment.value?.status)) watchDeploymentStream(deployment.id);
   } catch (error) {
     deployError.value = error instanceof Error ? error.message : 'Could not load deployment details.';
   } finally {
     deploymentDetailLoading.value = false;
   }
+}
+
+function deploymentTerminal(status?: string) {
+  return status === 'deployed' || status === 'failed' || status === 'cancelled';
+}
+
+function stopDeploymentStream() {
+  deploymentEventSource?.close();
+  deploymentEventSource = undefined;
+}
+
+function setDeploymentNotice(id: string, siteID: string, siteName: string, status: string, message?: string) {
+  const progress = status === 'queued' ? 18 : status === 'running' ? 52 : 100;
+  deploymentNotice.value = { id, siteID, siteName, status, progress, message: message || `Deployment ${status}. Click to follow live logs.` };
+  if (deploymentNoticeTimer) clearTimeout(deploymentNoticeTimer);
+  if (deploymentTerminal(status)) {
+    deploymentNoticeTimer = setTimeout(() => { deploymentNotice.value = null; }, 9000);
+  }
+}
+
+function openDeploymentNotice() {
+  const notice = deploymentNotice.value;
+  if (!notice) return;
+  const site = sites.value.find((item) => item.id === notice.siteID);
+  if (!site) {
+    activeNav.value = 'Sites';
+    return;
+  }
+  selectedSite.value = site;
+  selectedSiteTab.value = 'Deployments';
+  activeNav.value = 'DeploymentDetail';
+  openDeploymentDetails({ id: notice.id } as Deployment);
+}
+
+function dismissDeploymentNotice() {
+  if (deploymentNoticeTimer) clearTimeout(deploymentNoticeTimer);
+  deploymentNotice.value = null;
+}
+
+function watchDeploymentStream(deploymentID: string, siteID = selectedSite.value?.id) {
+  stopDeploymentStream();
+  if (!siteID) return;
+  const source = new EventSource(`/releasestation/api/v1/sites/${siteID}/deployments/${deploymentID}/logs/stream`);
+  deploymentEventSource = source;
+  source.addEventListener('snapshot', (event) => {
+    try {
+      const detail = JSON.parse((event as MessageEvent).data) as Deployment;
+      if (selectedDeployment.value?.id === deploymentID) selectedDeployment.value = detail;
+      setDeploymentNotice(deploymentID, siteID, sites.value.find((item) => item.id === siteID)?.name || siteID, detail.status, detail.status === 'deployed' ? 'Deployment completed successfully.' : undefined);
+      if (deploymentTerminal(detail.status)) {
+        source.close();
+        loadSiteHistory();
+      }
+    } catch { /* Keep the stream alive when a frame is malformed. */ }
+  });
+  source.addEventListener('status', (event) => {
+    try {
+      const update = JSON.parse((event as MessageEvent).data) as { status: string };
+      if (selectedDeployment.value?.id === deploymentID && selectedDeployment.value) selectedDeployment.value = { ...selectedDeployment.value, status: update.status };
+      setDeploymentNotice(deploymentID, siteID, sites.value.find((item) => item.id === siteID)?.name || siteID, update.status, update.status === 'failed' ? 'Deployment failed. Click to inspect the error logs.' : undefined);
+      loadSiteHistory();
+      if (deploymentTerminal(update.status)) source.close();
+    } catch { /* Keep the stream alive when a frame is malformed. */ }
+  });
+  source.addEventListener('log', (event) => {
+    try {
+      const update = JSON.parse((event as MessageEvent).data) as { channel?: string; message?: string };
+      if (!selectedDeployment.value || selectedDeployment.value.id !== deploymentID || !update.message) return;
+      const key = update.channel === 'build' ? 'build_log' : 'deployment_log';
+      selectedDeployment.value = { ...selectedDeployment.value, [key]: `${selectedDeployment.value[key] || ''}${update.message}\n` };
+    } catch { /* Keep the stream alive when a frame is malformed. */ }
+  });
+  source.onerror = () => {
+    if (deploymentEventSource === source && selectedDeployment.value && deploymentTerminal(selectedDeployment.value.status)) stopDeploymentStream();
+  };
 }
 
 function backToSiteTab(tab: 'Overview' | 'Deployments' = 'Overview') {
@@ -823,7 +909,7 @@ function backToSiteTab(tab: 'Overview' | 'Deployments' = 'Overview') {
 }
 
 async function deployCommit(commit: Commit) {
-  if (!selectedSite.value || deployingCommitSha.value) return;
+    if (!selectedSite.value || deployingCommitSha.value) return;
   deployingCommitSha.value = commit.sha;
   deployMessage.value = '';
   deployError.value = '';
@@ -833,8 +919,10 @@ async function deployCommit(commit: Commit) {
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error?.message || 'Deployment failed.');
-    deployMessage.value = `${commit.sha.slice(0, 7)} deployed successfully.`;
+    deployMessage.value = `${commit.sha.slice(0, 7)} a fost pus în coadă pentru deployment.`;
+    if (payload.data?.id) setDeploymentNotice(payload.data.id, selectedSite.value.id, selectedSite.value.hostname || selectedSite.value.name, payload.data.status || 'queued');
     scheduleDeploymentToastDismissal();
+    if (payload.data?.id) watchDeploymentStream(payload.data.id, selectedSite.value.id);
     await loadSiteHistory();
   } catch (error) {
     deployError.value = error instanceof Error ? error.message : 'Deployment failed.';
@@ -1175,8 +1263,10 @@ async function deploySite(site: Site) {
     const response = await fetch(`/releasestation/api/v1/sites/${site.id}/deploy`, { method: 'POST', headers: { Accept: 'application/json' } });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error?.message || 'Deployment failed.');
-    deployMessage.value = `${site.hostname || site.name} deployed atomically.`;
+    deployMessage.value = `${site.hostname || site.name} a fost pus în coadă pentru deployment.`;
+    if (payload.data?.id) setDeploymentNotice(payload.data.id, site.id, site.hostname || site.name, payload.data.status || 'queued');
     scheduleDeploymentToastDismissal();
+    if (payload.data?.id) watchDeploymentStream(payload.data.id, site.id);
     await loadSites();
   } catch (error) {
     deployError.value = error instanceof Error ? error.message : 'Deployment failed.';
@@ -1317,6 +1407,8 @@ onBeforeUnmount(() => {
   if (dashboardRefreshTimer) clearInterval(dashboardRefreshTimer);
   clearImportCloseTimer();
   if (deploymentToastTimer) clearTimeout(deploymentToastTimer);
+  if (deploymentNoticeTimer) clearTimeout(deploymentNoticeTimer);
+  stopDeploymentStream();
   destroyDeployScriptEditor();
 });
 </script>
@@ -1402,8 +1494,8 @@ onBeforeUnmount(() => {
           </article>
           <article class="metric-card">
             <div class="metric-top"><span class="metric-label">Queue status</span><span class="metric-icon blue"><ListChecks :size="16" /></span></div>
-            <div class="metric-value">{{ dashboardMetrics.queue_status === 'running' ? 'Running' : 'Idle' }}</div>
-            <div class="metric-foot"><span class="status-inline"><span class="status-dot" />{{ dashboardMetrics.running_deploys }} active</span><span>Live polling</span></div>
+            <div class="metric-value">{{ dashboardMetrics.queue_status === 'running' ? 'Running' : (dashboardMetrics.queue_status === 'queued' ? 'Queued' : 'Idle') }}</div>
+            <div class="metric-foot"><span class="status-inline"><span class="status-dot" />{{ dashboardMetrics.running_deploys + dashboardMetrics.queued_deploys }} active</span><span>Live polling</span></div>
           </article>
         </section>
 
@@ -1475,6 +1567,13 @@ onBeforeUnmount(() => {
         <Transition name="toast">
           <div v-if="deployMessage || deployError" class="deployment-toast" :class="{ error: deployError }" role="status" aria-live="polite" @click="dismissDeploymentToast"><span class="deployment-toast-icon"><Check v-if="deployMessage" :size="16" /><CircleX v-else :size="16" /></span><span><strong>{{ deployError ? 'Deployment failed' : 'Deployment completed' }}</strong><small>{{ deployMessage || deployError }}</small></span><button type="button" aria-label="Close notification"><X :size="14" /></button></div>
         </Transition>
+        <Transition name="live-deployment">
+          <button v-if="deploymentNotice" class="live-deployment-notice" type="button" :class="{ failed: deploymentNotice.status === 'failed', completed: deploymentNotice.status === 'deployed' }" @click="openDeploymentNotice">
+            <span class="live-deployment-icon"><Check v-if="deploymentNotice.status === 'deployed'" :size="16" /><CircleX v-else-if="deploymentNotice.status === 'failed'" :size="16" /><RotateCw v-else :size="16" class="spin" /></span>
+            <span class="live-deployment-copy"><strong>{{ deploymentNotice.status === 'queued' ? 'Deployment queued' : (deploymentNotice.status === 'running' ? 'Deployment in progress' : (deploymentNotice.status === 'deployed' ? 'Deployment completed' : 'Deployment failed')) }}</strong><small>{{ deploymentNotice.siteName }} · {{ deploymentNotice.message }}</small><span class="live-deployment-progress"><i :style="{ width: `${deploymentNotice.progress}%` }" /></span><em>Click to open live deployment logs</em></span>
+            <span class="live-deployment-close" aria-label="Close notification" @click.stop="dismissDeploymentNotice"><X :size="14" /></span>
+          </button>
+        </Transition>
 
         <section v-if="activeNav === 'Sites'" class="sites-management">
           <div class="sites-management-header"><div><div class="eyebrow"><span class="eyebrow-pulse" /> SITE CATALOG</div><h1>Managed sites.</h1><p class="hero-copy">Review imported Web Station applications, document roots and deployment readiness.</p></div><div class="hero-actions"><button class="button button-secondary" type="button" @click="loadSites"><RotateCw :size="15" />Refresh</button><button class="button button-secondary" type="button" @click="openDiscovery"><Globe2 :size="15" />Discover Web Station</button><button class="button button-primary" type="button" @click="openWizard"><Plus :size="15" />Add site</button></div></div>
@@ -1494,8 +1593,9 @@ onBeforeUnmount(() => {
           <template v-if="selectedSiteTab === 'Overview'">
             <div class="site-meta-grid"><article class="panel site-meta-card"><span>Framework</span><strong>{{ frameworkLabel(selectedSite.framework) }}</strong></article><article class="panel site-meta-card"><span>PHP</span><strong>{{ siteRuntime(selectedSite, 'php_version', '8.5') }}</strong></article><article class="panel site-meta-card"><span>HTTP server</span><strong>{{ siteRuntime(selectedSite, 'http_server', 'Unknown') }}</strong></article><article class="panel site-meta-card"><span>Public IP</span><button type="button" @click="copyPublicIP(selectedSite)">{{ siteRuntime(selectedSite, 'public_ip', 'Not detected') }}</button></article><article class="panel site-meta-card"><span>Public Web</span><a :href="sitePublicURL(selectedSite)" target="_blank" rel="noreferrer">{{ sitePublicURL(selectedSite) }}</a></article><article class="panel site-meta-card"><span>Created</span><strong>{{ createdLabel(selectedSite.created_at) }}</strong></article></div>
             <div class="detail-section-heading"><div><div class="panel-kicker">SOURCE HISTORY</div><h2>Commits</h2></div><span class="muted-copy">{{ selectedSite.repository?.branch || 'main' }}</span></div>
+            <div class="commit-legend" aria-label="Commit status legend"><span><span class="commit-state deployed"><Check :size="11" /></span>Deployed directly</span><span><span class="commit-state included"><CircleDot :size="11" /></span>Included in a newer deployed commit</span><span><span class="commit-state pending"><CircleDot :size="11" /></span>Not deployed</span><span><span class="commit-state failed"><CircleX :size="11" /></span>Deployment failed</span></div>
             <div v-if="siteDetailLoading" class="detail-loading"><RotateCw :size="16" class="spin" /> Loading repository history…</div>
-            <div v-else-if="siteCommits.length" class="commit-table"><div v-for="commit in siteCommits" :key="commit.sha" class="commit-row" :class="commit.status"><span class="commit-state" :class="commit.status" v-if="commit.deployed"><Check :size="13" /></span><span class="commit-state failed" v-else-if="commit.status === 'failed'"><CircleX :size="13" /></span><span class="commit-state pending" v-else><CircleDot :size="13" /></span><code>{{ commit.sha.slice(0, 7) }}</code><span class="commit-message"><strong>{{ commit.message.split('\n')[0] }}</strong><small>{{ commit.author || 'GitHub' }} · {{ relativeTime(commit.created_at) }}</small></span><span class="commit-status">{{ commit.deployed ? 'Deployed' : (commit.status === 'failed' ? 'Failed' : 'Not deployed') }}</span><button class="button button-secondary commit-deploy" type="button" :disabled="deployingCommitSha !== '' || commit.deployed || selectedSite.strategy !== 'atomic'" @click="deployCommit(commit)"><RotateCw v-if="deployingCommitSha === commit.sha" :size="13" class="spin" /><span v-else>Deploy</span></button></div></div>
+            <div v-else-if="siteCommits.length" class="commit-table"><div v-for="commit in siteCommits" :key="commit.sha" class="commit-row" :class="commit.status"><span class="commit-state" :class="commit.status" v-if="commit.deployed"><Check :size="13" /></span><span class="commit-state included" v-else-if="commit.included_in_deployed"><CircleDot :size="13" /></span><span class="commit-state failed" v-else-if="commit.status === 'failed'"><CircleX :size="13" /></span><span class="commit-state pending" v-else><CircleDot :size="13" /></span><code>{{ commit.sha.slice(0, 7) }}</code><span class="commit-message"><strong>{{ commit.message.split('\n')[0] }}</strong><small>{{ commit.author || 'GitHub' }} · {{ relativeTime(commit.created_at) }}</small></span><span class="commit-status">{{ commit.deployed ? 'Deployed directly' : (commit.included_in_deployed ? 'Included in newer deploy' : (commit.status === 'failed' ? 'Failed' : 'Not deployed')) }}</span><button class="button button-secondary commit-deploy" type="button" :disabled="deployingCommitSha !== '' || commit.deployed || commit.included_in_deployed || selectedSite.strategy !== 'atomic'" @click="deployCommit(commit)"><RotateCw v-if="deployingCommitSha === commit.sha" :size="13" class="spin" /><span v-else>Deploy</span></button></div></div>
             <div v-else class="management-empty"><GitBranch :size="22" /><strong>No commits available</strong><span>Connect GitHub and configure a repository for this site to see commit history.</span></div>
           </template>
           <template v-else-if="selectedSiteTab === 'Settings'">
@@ -1531,16 +1631,17 @@ onBeforeUnmount(() => {
           </template>
           <template v-else>
             <div class="deployments-toolbar"><div><div class="panel-kicker">DEPLOYMENT HISTORY</div><h2>Deployments</h2></div><input v-model="deploymentSearch" type="search" placeholder="Search commit name…" @change="sitePage = 1; loadSiteHistory()" /></div>
-            <div v-if="siteDeployments.length" class="deployment-history-list"><button v-for="deployment in siteDeployments" :key="deployment.id" class="deployment-history-row" type="button" @click="openDeploymentDetails(deployment)"><span class="commit-state" :class="deployment.status"><Check v-if="deployment.status === 'deployed'" :size="13" /><RotateCw v-else-if="deployment.status === 'running'" :size="13" class="spin" /><CircleX v-else :size="13" /></span><code>{{ deployment.commit_sha ? deployment.commit_sha.slice(0, 7) : 'unknown' }}</code><span class="commit-message"><strong>{{ deployment.commit_message || 'Deployment without commit metadata' }}</strong><small>{{ deployment.branch || '—' }} · {{ relativeTime(deployment.created_at) }} · {{ durationLabel(deployment.duration_ms) }}</small></span><span class="discovery-badge" :class="deployment.status">{{ deployment.status }}</span><span class="row-arrow">→</span></button></div><div v-else class="management-empty"><Clock3 :size="22" /><strong>No deployments yet</strong><span>Deploy a commit from Overview to build the deployment history.</span></div>
+            <div v-if="siteDeployments.length" class="deployment-history-list"><button v-for="deployment in siteDeployments" :key="deployment.id" class="deployment-history-row" type="button" @click="openDeploymentDetails(deployment)"><span class="commit-state" :class="deployment.status"><Check v-if="deployment.status === 'deployed'" :size="13" /><RotateCw v-else-if="deployment.status === 'running' || deployment.status === 'queued'" :size="13" class="spin" /><CircleX v-else :size="13" /></span><code>{{ deployment.commit_sha ? deployment.commit_sha.slice(0, 7) : 'unknown' }}</code><span class="commit-message"><strong>{{ deployment.commit_message || 'Deployment without commit metadata' }}</strong><small>{{ deployment.branch || '—' }} · {{ relativeTime(deployment.created_at) }} · {{ durationLabel(deployment.duration_ms) }}</small></span><span class="discovery-badge" :class="deployment.status">{{ deployment.status }}</span><span class="row-arrow">→</span></button></div><div v-else class="management-empty"><Clock3 :size="22" /><strong>No deployments yet</strong><span>Deploy a commit from Overview to build the deployment history.</span></div>
             <div class="pagination"><button type="button" :disabled="sitePage <= 1" @click="setDeploymentPage(sitePage - 1)">Previous</button><span>Page {{ sitePage }} of {{ siteTotalPages }}</span><button type="button" :disabled="sitePage >= siteTotalPages" @click="setDeploymentPage(sitePage + 1)">Next</button></div>
           </template>
         </section>
 
         <section v-if="activeNav === 'DeploymentDetail' && selectedSite && selectedDeployment" class="deployment-detail-view">
-          <div class="deployment-detail-header"><div><button class="text-button" type="button" @click="backToSiteTab('Deployments')">← Back to deployments</button><h1>Deployment details <span>·</span> <code>{{ selectedDeployment.commit_sha ? selectedDeployment.commit_sha.slice(0, 7) : 'unknown' }}</code></h1><div class="deployment-detail-meta"><span class="commit-state" :class="selectedDeployment.status"><Check v-if="selectedDeployment.status === 'deployed'" :size="13" /><CircleX v-else :size="13" /></span><strong>{{ selectedDeployment.status }}</strong><span>{{ selectedDeployment.branch }}</span><span>·</span><span>{{ selectedDeployment.commit_message || 'No commit message' }}</span><span>·</span><span>{{ relativeTime(selectedDeployment.finished_at || selectedDeployment.created_at) }}</span><span>·</span><span>{{ durationLabel(selectedDeployment.duration_ms) }}</span></div></div><div class="hero-actions"><a v-if="sitePublicURL(selectedSite).startsWith('http')" class="button button-secondary" :href="sitePublicURL(selectedSite)" target="_blank" rel="noreferrer"><Globe2 :size="15" />Visit</a><button class="button button-secondary" type="button" @click="logsExpanded = !logsExpanded">{{ logsExpanded ? 'Collapse all' : 'Expand all' }}</button></div></div>
+          <div class="deployment-detail-header"><div><button class="text-button" type="button" @click="backToSiteTab('Deployments')">← Back to deployments</button><h1>Deployment details <span>·</span> <code>{{ selectedDeployment.commit_sha ? selectedDeployment.commit_sha.slice(0, 7) : 'unknown' }}</code></h1><div class="deployment-detail-meta"><span class="commit-state" :class="selectedDeployment.status"><Check v-if="selectedDeployment.status === 'deployed'" :size="13" /><RotateCw v-else-if="selectedDeployment.status === 'running' || selectedDeployment.status === 'queued'" :size="13" class="spin" /><CircleX v-else :size="13" /></span><strong>{{ selectedDeployment.status }}</strong><span>{{ selectedDeployment.branch }}</span><span>·</span><span>{{ selectedDeployment.commit_message || 'No commit message' }}</span><span>·</span><span>{{ relativeTime(selectedDeployment.finished_at || selectedDeployment.created_at) }}</span><span>·</span><span>{{ durationLabel(selectedDeployment.duration_ms) }}</span></div></div><div class="hero-actions"><a v-if="sitePublicURL(selectedSite).startsWith('http')" class="button button-secondary" :href="sitePublicURL(selectedSite)" target="_blank" rel="noreferrer"><Globe2 :size="15" />Visit</a><button class="button button-secondary" type="button" @click="logsExpanded = !logsExpanded">{{ logsExpanded ? 'Collapse all' : 'Expand all' }}</button></div></div>
           <div class="detail-facts"><span><strong>Method</strong>{{ selectedDeployment.deployment_method || selectedDeployment.trigger_type || 'manual' }}</span><span><strong>Branch</strong>{{ selectedDeployment.branch || '—' }}</span><span><strong>Commit</strong>{{ selectedDeployment.commit_sha || '—' }}</span><span><strong>Started</strong>{{ selectedDeployment.started_at || '—' }}</span></div>
-          <details :open="logsExpanded" class="log-panel"><summary><span class="commit-state deployed"><Check :size="13" /></span><strong>Build logs</strong><span>{{ durationLabel(selectedDeployment.duration_ms) }}</span></summary><pre>{{ selectedDeployment.build_log || 'No build output was captured.' }}</pre></details>
-          <details :open="logsExpanded" class="log-panel"><summary><span class="commit-state deployed"><Check :size="13" /></span><strong>Deployment logs</strong><span>{{ durationLabel(selectedDeployment.duration_ms) }}</span></summary><pre>{{ selectedDeployment.deployment_log || 'No deployment output was captured.' }}</pre></details>
+          <div v-if="selectedDeployment.steps?.length" class="pipeline-steps"><div v-for="step in selectedDeployment.steps" :key="step.id" class="pipeline-step-row"><span class="commit-state" :class="step.status"><Check v-if="step.status === 'completed'" :size="12" /><RotateCw v-else-if="step.status === 'running'" :size="12" class="spin" /><CircleX v-else :size="12" /></span><strong>{{ step.name }}</strong><span>{{ step.status }}</span><small>{{ durationLabel(step.duration_ms) }}</small></div></div>
+          <details :open="logsExpanded" class="log-panel"><summary><span class="commit-state" :class="selectedDeployment.status"><Check v-if="selectedDeployment.status === 'deployed'" :size="13" /><RotateCw v-else-if="selectedDeployment.status === 'running' || selectedDeployment.status === 'queued'" :size="13" class="spin" /><CircleX v-else :size="13" /></span><strong>Build logs</strong><span>{{ durationLabel(selectedDeployment.duration_ms) }}</span></summary><pre>{{ selectedDeployment.build_log || 'No build output was captured.' }}</pre></details>
+          <details :open="logsExpanded" class="log-panel"><summary><span class="commit-state" :class="selectedDeployment.status"><Check v-if="selectedDeployment.status === 'deployed'" :size="13" /><RotateCw v-else-if="selectedDeployment.status === 'running' || selectedDeployment.status === 'queued'" :size="13" class="spin" /><CircleX v-else :size="13" /></span><strong>Deployment logs</strong><span>{{ durationLabel(selectedDeployment.duration_ms) }}</span></summary><pre>{{ selectedDeployment.deployment_log || 'No deployment output was captured.' }}</pre></details>
         </section>
 
         <section v-if="activeNav === 'Settings'" class="settings-view">

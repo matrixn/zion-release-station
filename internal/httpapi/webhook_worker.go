@@ -22,6 +22,7 @@ const (
 // never calls the NAS directly: the connector authenticates the HMAC and the
 // SPK reads only its own authenticated queue.
 func (s *Server) RunBackground(ctx context.Context) {
+	s.deployQueue.Start(ctx)
 	s.processGitHubWebhookEvents(ctx)
 	ticker := time.NewTicker(githubWebhookPollInterval)
 	defer ticker.Stop()
@@ -107,13 +108,13 @@ func (s *Server) processGitHubWebhookEvent(ctx context.Context, managedSites []s
 			continue
 		}
 
-		deployContext, cancel := context.WithTimeout(ctx, 30*time.Minute)
-		result, err := s.deployer.DeployGitHubWebhook(deployContext, site, event.AfterSHA)
+		queueContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+		result, err := s.deployQueue.Enqueue(queueContext, site, event.AfterSHA, "webhook", "webhook")
 		cancel()
 		if err != nil {
-			return fmt.Errorf("deploy site %s: %w", site.ID, err)
+			return fmt.Errorf("queue deploy for site %s: %w", site.ID, err)
 		}
-		s.logger.Info("GitHub push deployed", "site_id", site.ID, "repository", event.RepositoryFullName, "branch", branch, "commit", event.AfterSHA, "deployment_id", result.DeploymentID)
+		s.logger.Info("GitHub push queued", "site_id", site.ID, "repository", event.RepositoryFullName, "branch", branch, "commit", event.AfterSHA, "deployment_id", result.ID)
 	}
 	return nil
 }

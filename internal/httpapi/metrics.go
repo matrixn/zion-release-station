@@ -13,6 +13,7 @@ type dashboardMetrics struct {
 	TotalDeploys      int64            `json:"total_deploys"`
 	MedianDurationMS  int64            `json:"median_duration_ms"`
 	RunningDeploys    int64            `json:"running_deploys"`
+	QueuedDeploys     int64            `json:"queued_deploys"`
 	QueueStatus       string           `json:"queue_status"`
 	Latest            map[string]any   `json:"latest,omitempty"`
 	Services          []map[string]any `json:"services"`
@@ -20,12 +21,14 @@ type dashboardMetrics struct {
 
 func (s *Server) dashboardMetrics(ctx context.Context) (dashboardMetrics, error) {
 	var result dashboardMetrics
-	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(CASE WHEN status = 'deployed' THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0) FROM deployments`).Scan(&result.TotalDeploys, &result.SuccessfulDeploys, &result.RunningDeploys); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*), COALESCE(SUM(CASE WHEN status = 'deployed' THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN status = 'running' THEN 1 ELSE 0 END), 0), COALESCE(SUM(CASE WHEN status = 'queued' THEN 1 ELSE 0 END), 0) FROM deployments`).Scan(&result.TotalDeploys, &result.SuccessfulDeploys, &result.RunningDeploys, &result.QueuedDeploys); err != nil {
 		return dashboardMetrics{}, fmt.Errorf("read deployment metrics: %w", err)
 	}
 	result.QueueStatus = "idle"
 	if result.RunningDeploys > 0 {
 		result.QueueStatus = "running"
+	} else if result.QueuedDeploys > 0 {
+		result.QueueStatus = "queued"
 	}
 	rows, err := s.db.QueryContext(ctx, `SELECT duration_ms FROM deployments WHERE status = 'deployed' AND duration_ms IS NOT NULL ORDER BY duration_ms`)
 	if err != nil {
@@ -48,12 +51,12 @@ func (s *Server) dashboardMetrics(ctx context.Context) (dashboardMetrics, error)
 		}
 	}
 	var latest struct {
-		SiteID, SiteName, Status, Branch, CommitSHA, CommitMessage, CreatedAt string
-		DurationMS                                                            sql.NullInt64
+		DeploymentID, SiteID, SiteName, Status, Branch, CommitSHA, CommitMessage, CreatedAt string
+		DurationMS                                                                          sql.NullInt64
 	}
-	err = s.db.QueryRowContext(ctx, `SELECT d.site_id, s.name, d.status, COALESCE(d.branch, ''), COALESCE(d.commit_sha, ''), COALESCE(d.commit_message, ''), d.created_at, d.duration_ms FROM deployments d JOIN sites s ON s.id = d.site_id ORDER BY d.created_at DESC LIMIT 1`).Scan(&latest.SiteID, &latest.SiteName, &latest.Status, &latest.Branch, &latest.CommitSHA, &latest.CommitMessage, &latest.CreatedAt, &latest.DurationMS)
+	err = s.db.QueryRowContext(ctx, `SELECT d.id, d.site_id, s.name, d.status, COALESCE(d.branch, ''), COALESCE(d.commit_sha, ''), COALESCE(d.commit_message, ''), d.created_at, d.duration_ms FROM deployments d JOIN sites s ON s.id = d.site_id ORDER BY d.created_at DESC LIMIT 1`).Scan(&latest.DeploymentID, &latest.SiteID, &latest.SiteName, &latest.Status, &latest.Branch, &latest.CommitSHA, &latest.CommitMessage, &latest.CreatedAt, &latest.DurationMS)
 	if err == nil {
-		result.Latest = map[string]any{"site_id": latest.SiteID, "site_name": latest.SiteName, "status": latest.Status, "branch": latest.Branch, "commit_sha": latest.CommitSHA, "commit_message": latest.CommitMessage, "created_at": latest.CreatedAt, "duration_ms": latest.DurationMS.Int64}
+		result.Latest = map[string]any{"deployment_id": latest.DeploymentID, "site_id": latest.SiteID, "site_name": latest.SiteName, "status": latest.Status, "branch": latest.Branch, "commit_sha": latest.CommitSHA, "commit_message": latest.CommitMessage, "created_at": latest.CreatedAt, "duration_ms": latest.DurationMS.Int64}
 	} else if err != sql.ErrNoRows {
 		return dashboardMetrics{}, fmt.Errorf("read latest deployment: %w", err)
 	}

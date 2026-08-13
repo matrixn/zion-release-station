@@ -33,6 +33,7 @@ type Server struct {
 	git           *gittransport.Client
 	githubManaged *githubconnector.Client
 	deployer      *deploy.Runner
+	deployQueue   *deploy.Queue
 }
 
 const webAccessSettingKey = "web_access_enabled"
@@ -49,7 +50,9 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 		git:           gittransport.NewClient(cfg.DataDir),
 		githubManaged: githubconnector.NewClient(cfg),
 	}
-	server.deployer = deploy.NewRunner(db, server.githubManaged)
+	events := deploy.NewEventHub()
+	server.deployer = deploy.NewRunnerWithHub(db, server.githubManaged, events)
+	server.deployQueue = deploy.NewQueue(db, server.deployer, server.sites.Get, 2)
 	if _, err := db.Exec(`INSERT OR IGNORE INTO settings(key, value_json, updated_at) VALUES (?, 'true', datetime('now'))`, webAccessSettingKey); err != nil {
 		logger.Error("initialize web access setting", "error", err)
 	}

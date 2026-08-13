@@ -85,6 +85,8 @@ Pentru site-uri noi sau importate, configurează repository-ul în tabul **Repos
 
 Atomic deployment folosește structura `/project-root/.zion/releases/<release-id>`, pregătește `/project-root/.current` către ultimul release și execută scriptul din Settings. Document root-ul Web Station rămâne `/project-root`, iar scriptul implicit pregătește conținutul într-un director temporar, păstrează `.zion` și `.current`, apoi publică fișierele aplicației direct în document root. Poți edita scriptul și adăuga Composer, migrations, npm sau health checks proprii; scriptul este executat de utilizatorul pachetului, nu ca root.
 
+Deployment Engine folosește o coadă persistentă: butonul **Deploy** înregistrează jobul și răspunde imediat, iar worker-ul îl execută cu lock per site. La restart, joburile `queued` sunt recuperate; același commit nu este pus de două ori în coada activă. Detaliile deployment-ului includ pașii pipeline, build/deployment logs și stream SSE live. Interfața nu oferă terminal remote și nu acceptă input de la shell în timpul execuției.
+
 În **Settings → Deployment toolchain checks** poți bifa tool-urile pe care vrei să le vezi în **System Overview**. Verificarea este live și caută binarele în PATH-urile uzuale DSM. Pentru PHP/Node.js/Git/MariaDB client, folosește Package Center când există pachetul; pentru Composer verifică runtime-ul PHP și rulează `composer --version`. Pentru fiecare card roșu, deschide **Read more** din System Overview: articolul include comanda de verificare și pașii de instalare/remediere.
 
 Interfața web folosește iconița pachetului DSM ca favicon prin /webman/3rdparty/zion-releasestation/images/app_64.png. Dacă browserul păstrează vechea cerere /favicon.ico, fă un hard refresh după instalarea noului SPK.

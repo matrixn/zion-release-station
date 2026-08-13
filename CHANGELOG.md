@@ -4,6 +4,10 @@ Istoricul de mai jos păstrează evoluția proiectului și explică problema sau
 
 ## Unreleased
 
+- **Milestone 4 — Deployment Engine** — deployment-urile manuale și webhook sunt persistate mai întâi ca `queued`, apoi executate de worker-e cu lock per site și recovery la restart. Commiturile active sunt deduplicate, iar erorile de infrastructură sau de executor sunt înregistrate ca `failed` fără să lase job-uri blocate.
+- **Pipeline și observabilitate** — fiecare deployment păstrează pașii `fetch`, `extract` și `publish`, durata, statusul și logurile build/deployment. Executorul transmite liniile scriptului în timp real prin SSE; interfața poate urmări coada, pașii și logurile fără input remote shell.
+- **Dashboard live** — queue status separă deployment-urile `queued` de cele `running`, iar istoricul și median deploy time folosesc datele persistente reale. Manual Deploy răspunde cu `202 Accepted` și urmărește deployment-ul până la `deployed` sau `failed`.
+
 - **Native DSM control center** — configurația nativă nu mai include conectarea GitHub. Overview-ul pune Runtime în partea de sus, afișează servicii verificate live și oferă acces direct la workspace, Activation și Configuration.
 - **Workspace route validation** — Configuration permite editarea rutei DSM, normalizează slash-urile, respinge traversal/caractere nesigure și detectează conflicte cu rutele rezervate DSM. O schimbare de rută este marcată explicit ca necesitând reload-ul resursei nginx DSM.
 - **Product naming** — suprafețele native, workspace-ul web, statusurile și metadatele de serviciu folosesc denumirea afișată „Release Station”.

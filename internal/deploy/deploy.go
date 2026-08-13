@@ -2,7 +2,6 @@ package deploy
 
 import (
 	"archive/tar"
-	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/rand"
@@ -35,6 +34,7 @@ type Runner struct {
 	db       *sql.DB
 	github   ArchiveDownloader
 	resolver CommitResolver
+	hub      *EventHub
 }
 
 type Result struct {
@@ -46,24 +46,26 @@ type Result struct {
 }
 
 type Deployment struct {
-	ID               string `json:"id"`
-	SiteID           string `json:"site_id"`
-	TriggerType      string `json:"trigger_type"`
-	Branch           string `json:"branch,omitempty"`
-	CommitSHA        string `json:"commit_sha,omitempty"`
-	CommitMessage    string `json:"commit_message,omitempty"`
-	CommitURL        string `json:"commit_url,omitempty"`
-	DeploymentMethod string `json:"deployment_method"`
-	Status           string `json:"status"`
-	ErrorCode        string `json:"error_code,omitempty"`
-	ErrorSummary     string `json:"error_summary,omitempty"`
-	QueuedAt         string `json:"queued_at"`
-	StartedAt        string `json:"started_at,omitempty"`
-	FinishedAt       string `json:"finished_at,omitempty"`
-	DurationMS       int64  `json:"duration_ms,omitempty"`
-	CreatedAt        string `json:"created_at"`
-	BuildLog         string `json:"build_log,omitempty"`
-	DeploymentLog    string `json:"deployment_log,omitempty"`
+	ID               string           `json:"id"`
+	SiteID           string           `json:"site_id"`
+	TriggerType      string           `json:"trigger_type"`
+	TriggerReference string           `json:"trigger_reference,omitempty"`
+	Branch           string           `json:"branch,omitempty"`
+	CommitSHA        string           `json:"commit_sha,omitempty"`
+	CommitMessage    string           `json:"commit_message,omitempty"`
+	CommitURL        string           `json:"commit_url,omitempty"`
+	DeploymentMethod string           `json:"deployment_method"`
+	Status           string           `json:"status"`
+	ErrorCode        string           `json:"error_code,omitempty"`
+	ErrorSummary     string           `json:"error_summary,omitempty"`
+	QueuedAt         string           `json:"queued_at"`
+	StartedAt        string           `json:"started_at,omitempty"`
+	FinishedAt       string           `json:"finished_at,omitempty"`
+	DurationMS       int64            `json:"duration_ms,omitempty"`
+	CreatedAt        string           `json:"created_at"`
+	BuildLog         string           `json:"build_log,omitempty"`
+	DeploymentLog    string           `json:"deployment_log,omitempty"`
+	Steps            []DeploymentStep `json:"steps,omitempty"`
 }
 
 type Commit struct {
@@ -87,7 +89,12 @@ type Page struct {
 }
 
 func NewRunner(db *sql.DB, github ArchiveDownloader) *Runner {
+	return NewRunnerWithHub(db, github, NewEventHub())
+}
+
+func NewRunnerWithHub(db *sql.DB, github ArchiveDownloader, hub *EventHub) *Runner {
 	runner := &Runner{db: db, github: github}
+	runner.hub = hub
 	if resolver, ok := github.(CommitResolver); ok {
 		runner.resolver = resolver
 	}
@@ -99,17 +106,21 @@ func (r *Runner) DeployGitHub(ctx context.Context, site sites.Site) (Result, err
 }
 
 func (r *Runner) DeployGitHubRef(ctx context.Context, site sites.Site, ref string) (result Result, err error) {
-	return r.deployGitHubRef(ctx, site, ref, "manual", "manual")
+	return r.deployGitHubRef(ctx, site, ref, "manual", "manual", "")
+}
+
+func (r *Runner) DeployGitHubRefWithID(ctx context.Context, site sites.Site, ref, triggerType, deploymentMethod, deploymentID string) (result Result, err error) {
+	return r.deployGitHubRef(ctx, site, ref, triggerType, deploymentMethod, deploymentID)
 }
 
 // DeployGitHubWebhook records and executes a deployment caused by a verified
 // GitHub push event. The event is still resolved through the connector before
 // downloading the archive, so the webhook payload never becomes shell input.
 func (r *Runner) DeployGitHubWebhook(ctx context.Context, site sites.Site, ref string) (result Result, err error) {
-	return r.deployGitHubRef(ctx, site, ref, "webhook", "webhook")
+	return r.deployGitHubRef(ctx, site, ref, "webhook", "webhook", "")
 }
 
-func (r *Runner) deployGitHubRef(ctx context.Context, site sites.Site, ref, triggerType, deploymentMethod string) (result Result, err error) {
+func (r *Runner) deployGitHubRef(ctx context.Context, site sites.Site, ref, triggerType, deploymentMethod, deploymentID string) (result Result, err error) {
 	if site.Strategy != "atomic" {
 		return Result{}, fmt.Errorf("site %q is not configured for atomic deployment", site.ID)
 	}
@@ -118,9 +129,6 @@ func (r *Runner) deployGitHubRef(ctx context.Context, site sites.Site, ref, trig
 	}
 	if site.Repository.GitHubInstallationID == nil || site.Repository.GitHubFullName == "" {
 		return Result{}, fmt.Errorf("site %q has incomplete GitHub repository metadata", site.ID)
-	}
-	if filepath.Clean(site.WebRoot) == filepath.Clean(site.ProjectRoot) {
-		return Result{}, fmt.Errorf("atomic deployment requires a document root below the project root, such as %q", filepath.Join(site.ProjectRoot, "current"))
 	}
 	if err := os.MkdirAll(site.ProjectRoot, 0o755); err != nil {
 		return Result{}, fmt.Errorf("create project root: %w", err)
@@ -136,9 +144,11 @@ func (r *Runner) deployGitHubRef(ctx context.Context, site sites.Site, ref, trig
 	}
 	defer releaseLock(lock)
 
-	deploymentID, err := newID("dep_")
-	if err != nil {
-		return Result{}, err
+	if deploymentID == "" {
+		deploymentID, err = newID("dep_")
+		if err != nil {
+			return Result{}, err
+		}
 	}
 	releaseID, err := newID("rel_")
 	if err != nil {
@@ -162,15 +172,17 @@ func (r *Runner) deployGitHubRef(ctx context.Context, site sites.Site, ref, trig
 			return Result{}, err
 		}
 	}
-	logs := newDeploymentLogs()
+	logs := newDeploymentLogs(r.hub, deploymentID)
 	logs.add("build", "Preparing deployment for "+site.Name)
 	logs.add("build", "Resolving commit "+archiveRef)
 	if commit.SHA != "" {
 		logs.add("build", "Resolved "+commit.SHA+" — "+strings.Split(commit.Message, "\n")[0])
 	}
-	if err := r.createDeployment(ctx, deploymentID, site.ID, branch, commit, triggerType, deploymentMethod); err != nil {
+	if err := r.startDeployment(ctx, deploymentID, site.ID, branch, commit, triggerType, deploymentMethod); err != nil {
 		return Result{}, err
 	}
+	steps := newStepTracker(ctx, r, deploymentID)
+	defer steps.failOpen()
 	failed := true
 	defer func() {
 		if err != nil {
@@ -190,6 +202,9 @@ func (r *Runner) deployGitHubRef(ctx context.Context, site sites.Site, ref, trig
 	}
 	archivePath := archiveFile.Name()
 	defer os.Remove(archivePath)
+	if err := steps.begin("fetch", "Fetch repository archive", "source"); err != nil {
+		return Result{}, err
+	}
 	logs.add("deployment", "Downloading GitHub archive for "+archiveRef)
 	if err := r.github.DownloadArchive(ctx, *site.Repository.GitHubInstallationID, site.Repository.GitHubFullName, archiveRef, archiveFile); err != nil {
 		archiveFile.Close()
@@ -198,13 +213,22 @@ func (r *Runner) deployGitHubRef(ctx context.Context, site sites.Site, ref, trig
 	if err := archiveFile.Close(); err != nil {
 		return Result{}, fmt.Errorf("close archive staging file: %w", err)
 	}
+	if err := steps.finish("fetch", "completed", nil); err != nil {
+		return Result{}, err
+	}
 
 	stagePath := filepath.Join(releasesRoot, releaseID+".staging")
 	defer os.RemoveAll(stagePath)
+	if err := steps.begin("extract", "Validate and extract release", "build"); err != nil {
+		return Result{}, err
+	}
 	if err := os.MkdirAll(stagePath, 0o700); err != nil {
 		return Result{}, fmt.Errorf("create release staging directory: %w", err)
 	}
 	if err := extractArchive(archivePath, stagePath); err != nil {
+		return Result{}, err
+	}
+	if err := steps.finish("extract", "completed", nil); err != nil {
 		return Result{}, err
 	}
 	logs.add("deployment", "Archive extracted and staged")
@@ -218,6 +242,9 @@ func (r *Runner) deployGitHubRef(ctx context.Context, site sites.Site, ref, trig
 
 	currentStagingPath := filepath.Join(site.ProjectRoot, ".current")
 	nextStagingPath := currentStagingPath + ".next-" + releaseID
+	if err := steps.begin("publish", "Publish release to the document root", "deploy"); err != nil {
+		return Result{}, err
+	}
 	if err := os.Symlink(filepath.Join(".zion", "releases", releaseID), nextStagingPath); err != nil {
 		return Result{}, fmt.Errorf("prepare current staging link: %w", err)
 	}
@@ -230,6 +257,9 @@ func (r *Runner) deployGitHubRef(ctx context.Context, site sites.Site, ref, trig
 	}
 	logs.add("deployment", "Copied .current into "+site.WebRoot)
 	if err := r.activateRelease(ctx, site.ID, releaseID); err != nil {
+		return Result{}, err
+	}
+	if err := steps.finish("publish", "completed", nil); err != nil {
 		return Result{}, err
 	}
 	failed = false
@@ -257,26 +287,22 @@ func runDeploymentScript(ctx context.Context, site sites.Site, releasePath, curr
 		"DEPLOYMENT_ID="+deploymentID,
 		"COMMIT_SHA="+commitSHA,
 	)
-	var output bytes.Buffer
-	command.Stdout = &output
-	command.Stderr = &output
+	output := &liveLogWriter{logs: logs, channel: "deployment"}
+	command.Stdout = output
+	command.Stderr = output
 	if err := command.Run(); err != nil {
-		if text := strings.TrimSpace(output.String()); text != "" {
-			for _, line := range strings.Split(text, "\n") {
-				logs.add("deployment", line)
-			}
-		}
+		output.flush()
 		return fmt.Errorf("deployment script failed: %w", err)
 	}
-	if text := strings.TrimSpace(output.String()); text != "" {
-		for _, line := range strings.Split(text, "\n") {
-			logs.add("deployment", line)
-		}
-	}
+	output.flush()
 	return nil
 }
 
 func (r *Runner) createDeployment(ctx context.Context, id, siteID, branch string, commit githubconnector.Commit, triggerType, deploymentMethod string) error {
+	return r.startDeployment(ctx, id, siteID, branch, commit, triggerType, deploymentMethod)
+}
+
+func (r *Runner) startDeployment(ctx context.Context, id, siteID, branch string, commit githubconnector.Commit, triggerType, deploymentMethod string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if strings.TrimSpace(triggerType) == "" {
 		triggerType = "manual"
@@ -284,10 +310,17 @@ func (r *Runner) createDeployment(ctx context.Context, id, siteID, branch string
 	if strings.TrimSpace(deploymentMethod) == "" {
 		deploymentMethod = "manual"
 	}
-	_, err := r.db.ExecContext(ctx, `INSERT INTO deployments(id, site_id, trigger_type, branch, commit_sha, commit_message, commit_url, deployment_method, status, queued_at, started_at, created_at) VALUES (?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, 'running', ?, ?, ?)`, id, siteID, triggerType, branch, commit.SHA, commit.Message, commit.URL, deploymentMethod, now, now, now)
+	result, err := r.db.ExecContext(ctx, `UPDATE deployments SET trigger_type = ?, branch = ?, commit_sha = NULLIF(?, ''), commit_message = NULLIF(?, ''), commit_url = NULLIF(?, ''), deployment_method = ?, status = 'running', started_at = ?, error_code = NULL, error_summary = NULL WHERE id = ? AND site_id = ? AND status = 'queued'`, triggerType, branch, commit.SHA, commit.Message, commit.URL, deploymentMethod, now, id, siteID)
 	if err != nil {
-		return fmt.Errorf("create deployment record: %w", err)
+		return fmt.Errorf("start deployment record: %w", err)
 	}
+	if count, _ := result.RowsAffected(); count == 0 {
+		_, err = r.db.ExecContext(ctx, `INSERT INTO deployments(id, site_id, trigger_type, branch, commit_sha, commit_message, commit_url, deployment_method, status, queued_at, started_at, created_at) VALUES (?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, 'running', ?, ?, ?)`, id, siteID, triggerType, branch, commit.SHA, commit.Message, commit.URL, deploymentMethod, now, now, now)
+		if err != nil {
+			return fmt.Errorf("create deployment record: %w", err)
+		}
+	}
+	r.publishStatus(id, "running", "Deployment started")
 	return nil
 }
 
@@ -317,7 +350,25 @@ func (r *Runner) finishDeployment(ctx context.Context, id, status, code string) 
 	if err != nil {
 		return fmt.Errorf("finish deployment record: %w", err)
 	}
+	r.publishStatus(id, status, "Deployment "+status)
 	return nil
+}
+
+func (r *Runner) MarkFailed(ctx context.Context, id, code, summary string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := r.db.ExecContext(ctx, `UPDATE deployments SET status = 'failed', error_code = ?, error_summary = ?, finished_at = ?, duration_ms = CAST((julianday(?) - julianday(COALESCE(started_at, queued_at))) * 86400000 AS INTEGER) WHERE id = ? AND status IN ('queued', 'running')`, code, summary, now, now, id)
+	if err == nil {
+		r.publishStatus(id, "failed", summary)
+	}
+	return err
+}
+
+func (r *Runner) Events() *EventHub { return r.hub }
+
+func (r *Runner) publishStatus(id, status, message string) {
+	if r.hub != nil {
+		r.hub.Publish(Event{Type: "status", DeploymentID: id, Status: status, Message: message})
+	}
 }
 
 func acquireLock(path string) (*os.File, error) {

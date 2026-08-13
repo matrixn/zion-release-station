@@ -6,12 +6,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/matrixn/zion-release-station/internal/detection"
 	"github.com/matrixn/zion-release-station/internal/pathsecurity"
@@ -139,6 +141,14 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 			s.handleDeploymentDetails(w, r, parts[0], parts[2])
 			return
 		}
+		if len(parts) == 4 && parts[1] == "deployments" && parts[3] == "logs" {
+			s.handleDeploymentLogs(w, r, parts[0], parts[2])
+			return
+		}
+		if len(parts) == 5 && parts[1] == "deployments" && parts[3] == "logs" && parts[4] == "stream" {
+			s.handleDeploymentLogStream(w, r, parts[0], parts[2])
+			return
+		}
 	}
 	if strings.HasSuffix(id, "/commits") {
 		if r.Method != http.MethodGet {
@@ -230,12 +240,12 @@ func (s *Server) handleSiteDeploy(w http.ResponseWriter, r *http.Request, id str
 	if r.Body != nil {
 		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&payload)
 	}
-	result, err := s.deployer.DeployGitHubRef(r.Context(), site, strings.TrimSpace(payload.Ref))
+	result, err := s.deployQueue.Enqueue(r.Context(), site, strings.TrimSpace(payload.Ref), "manual", "manual")
 	if err != nil {
-		writeError(w, http.StatusBadRequest, "DEPLOYMENT_FAILED", err.Error())
+		writeError(w, http.StatusBadRequest, "DEPLOYMENT_QUEUE_FAILED", err.Error())
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"data": result})
+	writeJSON(w, http.StatusAccepted, map[string]any{"data": result})
 }
 
 func (s *Server) handleSiteRepository(w http.ResponseWriter, r *http.Request, siteID string) {
@@ -405,6 +415,94 @@ func (s *Server) handleDeploymentDetails(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, http.StatusOK, map[string]any{"data": item})
 }
 
+func (s *Server) handleDeploymentLogs(w http.ResponseWriter, r *http.Request, siteID, deploymentID string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only GET is supported.")
+		return
+	}
+	s.handleDeploymentDetails(w, r, siteID, deploymentID)
+}
+
+func (s *Server) handleDeploymentLogStream(w http.ResponseWriter, r *http.Request, siteID, deploymentID string) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only GET is supported.")
+		return
+	}
+	if _, err := s.sites.Get(r.Context(), siteID); errors.Is(err, sites.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Site not found.")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "SITES_UNAVAILABLE", err.Error())
+		return
+	}
+	if _, err := s.deployer.GetDeployment(r.Context(), siteID, deploymentID); errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Deployment not found.")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "DEPLOYMENTS_UNAVAILABLE", err.Error())
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "STREAM_UNAVAILABLE", "The server does not support event streaming.")
+		return
+	}
+	stream, unsubscribe := s.deployer.Events().Subscribe(deploymentID)
+	defer unsubscribe()
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache, no-transform")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	if item, err := s.deployer.GetDeployment(r.Context(), siteID, deploymentID); err == nil {
+		if !writeSSE(w, "snapshot", item) {
+			return
+		}
+		flusher.Flush()
+		if deploymentTerminal(item.Status) {
+			return
+		}
+	}
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case event, open := <-stream:
+			if !open {
+				return
+			}
+			if !writeSSE(w, event.Type, event) {
+				return
+			}
+			flusher.Flush()
+			if deploymentTerminal(event.Status) {
+				return
+			}
+		case <-heartbeat.C:
+			if _, err := io.WriteString(w, ": keep-alive\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
+}
+
+func writeSSE(w http.ResponseWriter, eventName string, value any) bool {
+	payload, err := json.Marshal(value)
+	if err != nil {
+		return false
+	}
+	if _, err := fmt.Fprintf(w, "event: %s\ndata: %s\n\n", eventName, payload); err != nil {
+		return false
+	}
+	return true
+}
+
+func deploymentTerminal(status string) bool {
+	return status == "deployed" || status == "failed" || status == "cancelled"
+}
+
 func (s *Server) handleSiteCommits(w http.ResponseWriter, r *http.Request, siteID string) {
 	site, err := s.sites.Get(r.Context(), siteID)
 	if errors.Is(err, sites.ErrNotFound) {
@@ -434,7 +532,14 @@ func (s *Server) handleSiteCommits(w http.ResponseWriter, r *http.Request, siteI
 		return
 	}
 	items := make([]map[string]any, 0, len(commits))
-	for _, commit := range commits {
+	latestDeployedIndex := -1
+	for index, commit := range commits {
+		if deployment, ok := statuses[commit.SHA]; ok && deployment.Status == "deployed" {
+			latestDeployedIndex = index
+			break
+		}
+	}
+	for index, commit := range commits {
 		deployment, ok := statuses[commit.SHA]
 		status := "not_deployed"
 		deploymentID := ""
@@ -442,7 +547,11 @@ func (s *Server) handleSiteCommits(w http.ResponseWriter, r *http.Request, siteI
 			status = deployment.Status
 			deploymentID = deployment.DeploymentID
 		}
-		items = append(items, map[string]any{"sha": commit.SHA, "message": commit.Message, "branch": commit.Branch, "author": commit.Author, "url": commit.URL, "created_at": commit.CreatedAt, "deployed": status == "deployed", "deployment_id": deploymentID, "status": status})
+		included := latestDeployedIndex >= 0 && index > latestDeployedIndex && status != "deployed"
+		if included {
+			status = "included"
+		}
+		items = append(items, map[string]any{"sha": commit.SHA, "message": commit.Message, "branch": commit.Branch, "author": commit.Author, "url": commit.URL, "created_at": commit.CreatedAt, "deployed": status == "deployed", "included_in_deployed": included, "deployment_id": deploymentID, "status": status})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": items, "branch": branch})
 }
