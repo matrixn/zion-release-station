@@ -171,7 +171,15 @@ h2 { margin-top: 7px; font-size: 16px; letter-spacing: -.035em; }
  .repository-editor input, .repository-editor select, .repository-editor textarea { width: 100%; min-width: 0; padding: 11px 12px; color: var(--rs-text); outline: none; border: 1px solid var(--rs-border); border-radius: 8px; background: var(--rs-bg); font-size: 11px; }
  .repository-editor input:focus, .repository-editor select:focus, .repository-editor textarea:focus { border-color: var(--rs-accent); box-shadow: 0 0 0 3px rgba(242, 140, 59, .1); }
  .repository-editor small { color: var(--rs-text-faint); font-size: 9px; font-weight: 400; line-height: 1.5; }
- .repository-editor .wizard-intro { width: 100%; }
+.repository-editor .wizard-intro { width: 100%; }
+.repository-transport { display: grid; gap: 12px; margin-top: 2px; padding: 14px; border-color: color-mix(in srgb, var(--rs-info) 22%, var(--rs-border)); background: color-mix(in srgb, var(--rs-bg) 62%, transparent); }
+.transport-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.transport-heading > div { display: grid; gap: 5px; }
+.transport-heading strong { color: var(--rs-text); font-size: 11px; }
+.transport-heading span { max-width: 660px; color: var(--rs-text-muted); font-size: 10px; line-height: 1.5; }
+.transport-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.transport-key { display: grid; gap: 7px; }
+.transport-key small { color: var(--rs-text-faint); font-size: 9px; }
  .brand-icon { width: 35px; height: 35px; flex: 0 0 auto; border-radius: 10px; object-fit: cover; box-shadow: 0 8px 20px rgba(32, 59, 90, .22); }
  .site-settings-layout { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; margin-top: 20px; }
  .site-settings-section { display: grid; gap: 16px; padding: 20px; border: 1px solid var(--rs-border); border-radius: 14px; background: color-mix(in srgb, var(--rs-surface) 94%, transparent); }

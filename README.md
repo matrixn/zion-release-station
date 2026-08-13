@@ -299,4 +299,15 @@ Arhitectura trebuie să permită ulterior licențe Pro/Business cu activare per 
 
 ## Status
 
-Acest repository începe cu documentația de produs derivată din conversația de proiect. Următoarele livrabile sunt scheletul monorepo, build-ul reproducibil, integrarea SPK de bază și apoi implementarea incrementală a backend-ului, frontend-ului și Web Station adapter.
+Milestone 1 (SPK/runtime), Milestone 2 (site-uri și Web Station read-only) și Milestone 3 (transport Git) sunt implementate incremental și validate prin testele backend plus build-ul frontend.
+
+### Transport Git și deploy key
+
+Din tab-ul `Repository` al unui site se poate genera o cheie Ed25519. ReleaseStation păstrează cheia privată criptată în runtime-ul NAS și afișează numai cheia publică. Pentru un repository SSH:
+
+1. generează cheia din `Repository → Generate deploy key`;
+2. adaugă cheia publică în GitHub la `Settings → Deploy keys` cu acces read-only;
+3. configurează un host key acceptat în `/var/packages/zion-releasestation/var/git/known_hosts`;
+4. folosește `Test Git connection` pentru validarea repository-ului și branch-ului.
+
+Verificarea SSH folosește `StrictHostKeyChecking=yes`; un host absent din `known_hosts` este respins. API-ul Git este disponibil sub `/releasestation/api/v1/git/` și nu returnează niciodată cheia privată.

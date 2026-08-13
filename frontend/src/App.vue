@@ -184,6 +184,11 @@ const deployError = ref('');
 const repositorySaving = ref(false);
 const repositoryMessage = ref('');
 const repositoryError = ref('');
+const gitTransportState = ref<'idle' | 'testing' | 'success' | 'error'>('idle');
+const gitTransportMessage = ref('');
+const deployPublicKey = ref('');
+const deployKeyFingerprint = ref('');
+const deployKeyLoading = ref(false);
 const repositoryForm = ref({
   provider: 'github',
   clone_url: '',
@@ -528,6 +533,53 @@ function openRepositoryTab() {
   if (githubState.value.connected && !githubRepositories.value.length) loadGithubRepositories();
   const repository = githubRepositories.value.find((item) => item.full_name === repositoryForm.value.github_full_name);
   if (repository) loadGithubBranches(repository);
+  loadDeployKey();
+}
+
+async function loadDeployKey() {
+  if (!selectedSite.value) return;
+  try {
+    const response = await fetch(`/releasestation/api/v1/git/deploy-key/${selectedSite.value.id}`, { headers: { Accept: 'application/json' } });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) return;
+    deployPublicKey.value = payload.data?.public_key || '';
+    deployKeyFingerprint.value = payload.data?.fingerprint || '';
+  } catch {
+    // The repository editor remains usable when the optional SSH key is absent.
+  }
+}
+
+async function generateDeployKey() {
+  deployKeyLoading.value = true;
+  repositoryError.value = '';
+  try {
+    const response = await fetch('/releasestation/api/v1/git/generate-deploy-key', { method: 'POST', headers: { Accept: 'application/json' } });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut genera cheia deploy.');
+    deployPublicKey.value = payload.data?.public_key || '';
+    deployKeyFingerprint.value = payload.data?.fingerprint || '';
+    repositoryMessage.value = 'Cheia publică a fost generată. Adaug-o în GitHub Deploy keys înainte de test.';
+  } catch (error) {
+    repositoryError.value = error instanceof Error ? error.message : 'Nu am putut genera cheia deploy.';
+  } finally {
+    deployKeyLoading.value = false;
+  }
+}
+
+async function testGitTransport() {
+  if (!selectedSite.value) return;
+  gitTransportState.value = 'testing';
+  gitTransportMessage.value = '';
+  try {
+    const response = await fetch('/releasestation/api/v1/git/test', { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ site_id: selectedSite.value.id, clone_url: repositoryForm.value.clone_url, branch: repositoryForm.value.branch }) });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error?.message || 'Conexiunea Git nu a putut fi verificată.');
+    gitTransportState.value = 'success';
+    gitTransportMessage.value = 'Repository-ul și branch-ul răspund corect.';
+  } catch (error) {
+    gitTransportState.value = 'error';
+    gitTransportMessage.value = error instanceof Error ? error.message : 'Conexiunea Git nu a putut fi verificată.';
+  }
 }
 
 const frameworkSettingOptions = [
@@ -1472,6 +1524,7 @@ onBeforeUnmount(() => {
               <label><span>Repository clone URL</span><input v-model="repositoryForm.clone_url" type="text" placeholder="https://github.com/owner/project.git" /><small>Repository-ul poate fi public sau privat. Pentru private, accesul trebuie acordat în instalarea GitHub Connector.</small></label><div v-if="githubBranchesError" class="wizard-hint warning"><CircleAlert :size="15" /><span>{{ githubBranchesError }}</span></div>
               <div class="strategy-grid"><label class="strategy-card" :class="{ selected: repositoryForm.strategy === 'in_place' }"><input v-model="repositoryForm.strategy" type="radio" value="in_place" /><span class="strategy-title">In-place <em>direct</em></span><span>Sincronizează direct rădăcina Web Station existentă. Este potrivit când site-ul are date și fișiere locale care trebuie păstrate.</span></label><label class="strategy-card" :class="{ selected: repositoryForm.strategy === 'atomic' }"><input v-model="repositoryForm.strategy" type="radio" value="atomic" /><span class="strategy-title">Atomic releases <em>safer rollback</em></span><span>Construiește release-uri separate și schimbă directorul activ numai după finalizarea deploy-ului.</span></label></div>
               <div class="wizard-hint"><CircleHelp :size="15" /><span>La trecerea pe Atomic, WebRoot-ul site-ului este setat automat la <code>{{ selectedSite.project_root }}/current</code>. La In-place revine la project root.</span></div>
+              <div class="repository-transport panel"><div class="transport-heading"><div><div class="panel-kicker">GIT TRANSPORT</div><strong>Deploy key și verificare SSH</strong><span>Cheia privată rămâne criptată pe NAS. Release Station expune doar cheia publică și verifică host-ul prin <code>known_hosts</code>.</span></div><span class="connection-badge" :class="{ connected: gitTransportState === 'success' }"><span class="status-dot" />{{ gitTransportState === 'success' ? 'Verified' : 'Not tested' }}</span></div><div class="transport-actions"><button class="button button-secondary" type="button" :disabled="deployKeyLoading" @click="generateDeployKey">{{ deployKeyLoading ? 'Generating…' : 'Generate deploy key' }}</button><button class="button button-secondary" type="button" :disabled="gitTransportState === 'testing' || !repositoryForm.clone_url || !repositoryForm.branch" @click="testGitTransport">{{ gitTransportState === 'testing' ? 'Testing…' : 'Test Git connection' }}</button></div><label v-if="deployPublicKey" class="transport-key"><span>Public key — add this in GitHub → Settings → Deploy keys</span><div class="copy-input"><input :value="deployPublicKey" readonly @click="copySiteDirectory(deployPublicKey)" /><button type="button" title="Copy public key" @click="copySiteDirectory(deployPublicKey)"><ArrowUpRight :size="13" /></button></div><small v-if="deployKeyFingerprint">Fingerprint: <code>{{ deployKeyFingerprint }}</code></small></label><div v-if="gitTransportMessage" class="wizard-hint" :class="{ warning: gitTransportState === 'error' }"><CircleAlert v-if="gitTransportState === 'error'" :size="15" /><Check v-else :size="15" /><span>{{ gitTransportMessage }}</span></div></div>
               <div v-if="repositoryError" class="discovery-error"><CircleAlert :size="16" />{{ repositoryError }}</div><div v-if="repositoryMessage" class="discovery-success"><Check :size="16" />{{ repositoryMessage }}</div>
               <div class="settings-actions"><button class="button button-secondary" type="button" :disabled="repositorySaving || !selectedSite.repository" @click="disconnectSiteRepository">Remove repository</button><span /><button class="button button-primary" type="button" :disabled="repositorySaving" @click="saveSiteRepository">{{ repositorySaving ? 'Saving…' : 'Save repository' }} <Check :size="14" /></button></div>
             </div>

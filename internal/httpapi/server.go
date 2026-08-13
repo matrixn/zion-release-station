@@ -16,6 +16,7 @@ import (
 	"github.com/matrixn/zion-release-station/internal/config"
 	"github.com/matrixn/zion-release-station/internal/deploy"
 	"github.com/matrixn/zion-release-station/internal/detection"
+	gittransport "github.com/matrixn/zion-release-station/internal/git"
 	"github.com/matrixn/zion-release-station/internal/githubconnector"
 	"github.com/matrixn/zion-release-station/internal/sites"
 	"github.com/matrixn/zion-release-station/internal/systemchecks"
@@ -29,6 +30,7 @@ type Server struct {
 	http          *http.Server
 	sites         *sites.Store
 	webStation    webstation.WebStationAdapter
+	git           *gittransport.Client
 	githubManaged *githubconnector.Client
 	deployer      *deploy.Runner
 }
@@ -44,6 +46,7 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 		logger:        logger,
 		sites:         sites.NewStore(db),
 		webStation:    webstation.NewFilesystemAdapter(cfg.WebStationRoots, detection.Registry{}),
+		git:           gittransport.NewClient(cfg.DataDir),
 		githubManaged: githubconnector.NewClient(cfg),
 	}
 	server.deployer = deploy.NewRunner(db, server.githubManaged)
@@ -70,6 +73,8 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 	server.registerSiteRoutes(mux, "/api/v1")
 	server.registerIntegrationRoutes(mux, "/releasestation/api/v1")
 	server.registerIntegrationRoutes(mux, "/api/v1")
+	server.registerGitRoutes(mux, "/releasestation/api/v1")
+	server.registerGitRoutes(mux, "/api/v1")
 	mux.Handle("/releasestation/", server.staticHandler())
 	server.http = &http.Server{
 		Addr:              cfg.BindAddress,
