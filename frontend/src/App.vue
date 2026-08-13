@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue';
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
 import {
   Activity,
   ArrowDownToLine,
   ArrowUpRight,
   Box,
   Check,
-  ChevronDown,
   CircleAlert,
   CircleDot,
   CircleX,
@@ -31,7 +30,6 @@ import {
   ServerCog,
   Settings2,
   ShieldCheck,
-  Sparkles,
   Sun,
   TerminalSquare,
   UploadCloud,
@@ -48,8 +46,14 @@ type Site = {
   project_root: string;
   web_root: string;
   framework: string;
+  custom_framework?: string;
   strategy: string;
   status: string;
+  tags?: string[];
+  color?: string;
+  push_to_deploy?: boolean;
+  deploy_script?: string;
+  deployment_retention?: number;
   runtime?: Record<string, any>;
   created_at: string;
   updated_at: string;
@@ -89,6 +93,7 @@ type GithubState = {
 
 const healthState = ref<HealthState>('checking');
 const themeStorageKey = 'zion-releasestation-theme';
+const packageIconURL = '/webman/3rdparty/zion-releasestation/images/app_64.png';
 function readStoredTheme() {
   try {
     return localStorage.getItem(themeStorageKey) === 'light' ? false : true;
@@ -99,9 +104,18 @@ function readStoredTheme() {
 const isDark = ref(readStoredTheme());
 const commandOpen = ref(false);
 const commandQuery = ref('');
-const activeNav = ref('Dashboard');
+const navigationStorageKey = 'zion-releasestation-navigation';
+function readStoredNavigation() {
+  try {
+    const value = localStorage.getItem(navigationStorageKey);
+    return ['Dashboard', 'Sites', 'Settings', 'Help'].includes(value || '') ? value || 'Dashboard' : 'Dashboard';
+  } catch {
+    return 'Dashboard';
+  }
+}
+const activeNav = ref(readStoredNavigation());
 const selectedSite = ref<Site | null>(null);
-const selectedSiteTab = ref<'Overview' | 'Repository' | 'Deployments'>('Overview');
+const selectedSiteTab = ref<'Overview' | 'Repository' | 'Deployments' | 'Settings'>('Overview');
 const selectedDeployment = ref<Deployment | null>(null);
 const siteDeployments = ref<Deployment[]>([]);
 const siteCommits = ref<Commit[]>([]);
@@ -171,6 +185,19 @@ const repositoryForm = ref({
   github_default_branch: '',
   strategy: 'in_place',
 });
+const siteSettingsSaving = ref(false);
+const siteSettingsMessage = ref('');
+const siteSettingsError = ref('');
+const siteTagDraft = ref('');
+const siteSettingsForm = ref({
+  framework: 'other',
+  custom_framework: '',
+  tags: [] as string[],
+  color: '#f28c3b',
+  push_to_deploy: false,
+  deploy_script: '',
+  deployment_retention: 4,
+});
 type DashboardMetrics = {
   successful_deploys: number;
   total_deploys: number;
@@ -181,6 +208,9 @@ type DashboardMetrics = {
   services: { label: string; state: string; detail: string }[];
 };
 const dashboardMetrics = ref<DashboardMetrics>({ successful_deploys: 0, total_deploys: 0, median_duration_ms: 0, running_deploys: 0, queue_status: 'idle', services: [] });
+watch(activeNav, (value) => {
+  try { localStorage.setItem(navigationStorageKey, value); } catch { /* localStorage is optional */ }
+});
 let githubPollTimer: ReturnType<typeof setInterval> | undefined;
 let importCloseTimer: ReturnType<typeof setTimeout> | undefined;
 let dashboardRefreshTimer: ReturnType<typeof setInterval> | undefined;
@@ -248,8 +278,43 @@ const navItems = computed(() => [
 
 const systemIcons = [Globe2, GitBranch, Zap, Database];
 const systemItems = computed(() => dashboardMetrics.value.services.map((service, index) => ({ ...service, icon: systemIcons[index] || Activity })));
+const helpTopic = ref('intro');
+const helpArticles: Record<string, { title: string; summary: string; steps: string[] }> = {
+  'Web Station': {
+    title: 'Web Station discovery',
+    summary: 'Release Station citește configurațiile Web Station și separă rădăcina proiectului de document root-ul servit public.',
+    steps: ['Verifică în Settings că rădăcina Web Station este una dintre căile read-only configurate.', 'Acordă utilizatorului serviciului Release Station drept de citire pe /volume1/web sau pe rădăcina reală a site-urilor.', 'Dacă vezi permission denied, repară ACL-ul din DSM pentru utilizatorul serviciului și rulează din nou Discover Web Station.'],
+  },
+  'Git transport': {
+    title: 'Git Transport',
+    summary: 'Acest serviciu verifică faptul că NAS-ul poate folosi transportul Git necesar pentru repository-uri și deploy.',
+    steps: ['Confirmă că binarul git există pe NAS și poate fi executat de serviciul pachetului.', 'Pentru repository-uri private, reconectează GitHub din Settings și aprobă repository-ul în instalarea Zion.', 'Dacă repository-ul este configurat manual, verifică URL-ul clone și branch-ul selectat.'],
+  },
+  'GitHub connector': {
+    title: 'GitHub connector',
+    summary: 'Connectorul Zion intermediază accesul la repository-urile GitHub, inclusiv private, fără ca cheia aplicației să fie stocată pe NAS.',
+    steps: ['Deschide Settings și apasă Connect GitHub.', 'Autentifică-te în GitHub și instalează aplicația Zion în contul sau organizația dorită.', 'Aprobă repository-urile, apoi revino în Release Station și apasă Refresh repositories.'],
+  },
+  SQLite: {
+    title: 'SQLite database',
+    summary: 'Release Station folosește SQLite local pentru site-uri, deployment-uri, release-uri și starea connectorului.',
+    steps: ['Verifică în Package Health că serviciul local este healthy.', 'Nu șterge fișierul bazei de date din directorul pachetului.', 'Dacă baza este blocată, oprește și pornește pachetul din Package Center înainte de a repeta operația.'],
+  },
+};
+function openHelp(topic = 'intro') {
+  helpTopic.value = topic;
+  activeNav.value = 'Help';
+}
 
 const featuredSite = computed(() => sites.value.find((site) => site.repository?.provider === 'github') || null);
+const githubRepositoryGroups = computed(() => {
+  const groups = new Map<string, GithubRepository[]>();
+  for (const repository of githubRepositories.value) {
+    const key = repository.account_login || repository.full_name.split('/')[0] || 'unknown';
+    groups.set(key, [...(groups.get(key) || []), repository]);
+  }
+  return [...groups.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([account, repositories]) => ({ account, repositories: repositories.sort((a, b) => a.name.localeCompare(b.name)) }));
+});
 const selectableDiscoveredPaths = computed(() => discoveredSites.value.filter((site) => !site.already_managed).map((site) => site.project_root));
 const allDiscoverableSelected = computed(() => selectableDiscoveredPaths.value.length > 0 && selectableDiscoveredPaths.value.every((path) => selectedDiscoveredPaths.value.includes(path)));
 
@@ -395,6 +460,69 @@ function openRepositoryTab() {
   if (repository) loadGithubBranches(repository);
 }
 
+const frameworkSettingOptions = [
+  { value: 'laravel', label: 'Laravel' }, { value: 'symfony', label: 'Symfony' }, { value: 'wordpress', label: 'WordPress' },
+  { value: 'php', label: 'PHP' }, { value: 'nextjs', label: 'Next.js' }, { value: 'html', label: 'HTML' }, { value: 'other', label: 'Other' }, { value: 'custom', label: 'Custom' },
+];
+
+function resetSiteSettingsForm(site: Site) {
+  const known = frameworkSettingOptions.some((option) => option.value === site.framework);
+  siteSettingsForm.value = {
+    framework: known ? site.framework : (site.custom_framework ? 'custom' : 'other'),
+    custom_framework: site.custom_framework || (!known ? frameworkLabel(site.framework) : ''),
+    tags: [...(site.tags || [])],
+    color: site.color || '#f28c3b',
+    push_to_deploy: !!site.push_to_deploy,
+    deploy_script: site.deploy_script || '',
+    deployment_retention: site.deployment_retention ?? 4,
+  };
+  siteTagDraft.value = '';
+}
+
+function openSiteSettings() {
+  if (!selectedSite.value) return;
+  resetSiteSettingsForm(selectedSite.value);
+  siteSettingsMessage.value = '';
+  siteSettingsError.value = '';
+  selectedSiteTab.value = 'Settings';
+}
+
+function addSiteTag() {
+  const tag = siteTagDraft.value.trim().replace(/\s+/g, ' ');
+  if (!tag || [...tag].length > 50) return;
+  if (!siteSettingsForm.value.tags.some((item) => item.toLowerCase() === tag.toLowerCase())) siteSettingsForm.value.tags.push(tag);
+  siteTagDraft.value = '';
+}
+
+function onSiteTagKeydown(event: KeyboardEvent) {
+  if (event.key === 'Enter' || event.key === ',') { event.preventDefault(); addSiteTag(); }
+}
+
+function removeSiteTag(tag: string) {
+  siteSettingsForm.value.tags = siteSettingsForm.value.tags.filter((item) => item !== tag);
+}
+
+async function copySiteDirectory(value: string) {
+  if (value) await navigator.clipboard?.writeText(value);
+}
+
+async function saveSiteSettings() {
+  if (!selectedSite.value) return;
+  if (siteSettingsForm.value.framework === 'custom' && !siteSettingsForm.value.custom_framework.trim()) { siteSettingsError.value = 'Introdu un nume pentru framework-ul custom.'; return; }
+  if (siteSettingsForm.value.custom_framework.length > 100) { siteSettingsError.value = 'Framework-ul custom poate avea maximum 100 de caractere.'; return; }
+  siteSettingsSaving.value = true; siteSettingsMessage.value = ''; siteSettingsError.value = '';
+  try {
+    const response = await fetch(`/releasestation/api/v1/sites/${selectedSite.value.id}/settings`, { method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ ...siteSettingsForm.value }) });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut salva setările site-ului.');
+    await loadSites();
+    selectedSite.value = sites.value.find((site) => site.id === selectedSite.value?.id) || selectedSite.value;
+    resetSiteSettingsForm(selectedSite.value);
+    siteSettingsMessage.value = 'Setările site-ului au fost salvate.';
+  } catch (error) { siteSettingsError.value = error instanceof Error ? error.message : 'Nu am putut salva setările site-ului.'; }
+  finally { siteSettingsSaving.value = false; }
+}
+
 function selectSiteGithubRepository(fullName: string) {
   const repository = githubRepositories.value.find((item) => item.full_name === fullName);
   if (!repository) {
@@ -428,7 +556,7 @@ async function saveSiteRepository() {
     const response = await fetch(`/releasestation/api/v1/sites/${selectedSite.value.id}/repository`, {
       method: 'PUT',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ strategy: repositoryForm.value.strategy, repository: { ...repositoryForm.value } }),
+      body: JSON.stringify({ strategy: repositoryForm.value.strategy, repository: { provider: repositoryForm.value.provider, clone_url: repositoryForm.value.clone_url, branch: repositoryForm.value.branch, github_installation_id: repositoryForm.value.github_installation_id, github_repository_id: repositoryForm.value.github_repository_id, github_full_name: repositoryForm.value.github_full_name, github_default_branch: repositoryForm.value.github_default_branch } }),
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut salva repository-ul.');
@@ -1001,18 +1129,12 @@ onBeforeUnmount(() => {
   <div class="app-frame">
     <aside class="sidebar">
       <div class="brand-lockup">
-        <div class="brand-mark"><Sparkles :size="18" /></div>
+        <img class="brand-icon" :src="packageIconURL" alt="Zion Release Station" />
         <div>
           <div class="brand-name">Zion</div>
-          <div class="brand-product">ReleaseStation</div>
+          <div class="brand-product">Release Station</div>
         </div>
       </div>
-
-      <button class="workspace-switcher" type="button">
-        <span class="workspace-avatar">Z</span>
-        <span class="workspace-copy"><strong>Development NAS</strong><small>DS1019+ · Apollo Lake</small></span>
-        <ChevronDown :size="15" />
-      </button>
 
       <div class="sidebar-section-label">Workspace</div>
       <nav class="primary-nav" aria-label="Primary navigation">
@@ -1033,7 +1155,7 @@ onBeforeUnmount(() => {
       <div class="sidebar-spacer" />
       <div class="sidebar-bottom">
         <button class="nav-item" :class="{ active: activeNav === 'Settings' }" type="button" @click="activeNav = 'Settings'"><Settings2 :size="17" /><span>Settings</span></button>
-        <button class="nav-item" type="button"><LifeBuoy :size="17" /><span>Help center</span></button>
+        <button class="nav-item" :class="{ active: activeNav === 'Help' }" type="button" @click="openHelp()"><LifeBuoy :size="17" /><span>Help center</span></button>
         <div class="profile-card">
           <div class="profile-avatar">MR</div>
           <div class="profile-copy"><strong>matrixn</strong><small>Administrator</small></div>
@@ -1048,7 +1170,7 @@ onBeforeUnmount(() => {
         <div class="topbar-actions">
           <button class="command-button" type="button" @click="openCommandPalette"><Search :size="16" /><span>Search</span><kbd>⌘ K</kbd></button>
           <button class="icon-button theme-toggle" type="button" :aria-label="isDark ? 'Switch to light theme' : 'Switch to dark theme'" :title="isDark ? 'Light mode' : 'Dark mode'" @click="toggleTheme"><Sun v-if="isDark" :size="17" /><Moon v-else :size="17" /></button>
-          <button class="icon-button" type="button" aria-label="Help"><CircleHelp :size="17" /></button>
+          <button class="icon-button" type="button" aria-label="Help" title="Help center" @click="openHelp()"><CircleHelp :size="17" /></button>
           <div class="topbar-avatar">MR</div>
         </div>
       </header>
@@ -1113,7 +1235,7 @@ onBeforeUnmount(() => {
           <article class="panel activity-panel">
             <div class="panel-heading"><div><div class="panel-kicker">SYSTEM OVERVIEW</div><h2>Everything is ready</h2></div><span class="health-badge" :class="healthState"><span class="status-dot" />{{ healthLabel }}</span></div>
             <div class="system-list">
-              <div v-for="item in systemItems" :key="item.label" class="system-row"><span class="system-icon"><component :is="item.icon" :size="15" /></span><span class="system-copy"><strong>{{ item.label }}</strong><small>{{ item.detail }}</small></span><Check v-if="item.state === 'ready'" :size="16" class="system-check" /><CircleX v-else :size="16" class="system-error" /></div>
+              <div v-for="item in systemItems" :key="item.label" class="system-row"><span class="system-icon"><component :is="item.icon" :size="15" /></span><span class="system-copy"><strong>{{ item.label }}</strong><small>{{ item.detail }}</small></span><button class="system-read-more" type="button" @click="openHelp(item.label)">Read more <ArrowUpRight :size="12" /></button><Check v-if="item.state === 'ready'" :size="16" class="system-check" /><CircleX v-else :size="16" class="system-error" /></div>
             </div>
             <div class="system-foot"><span>DSM 7.4-90075</span><span class="system-foot-separator">·</span><span>x86_64 / apollolake</span><button type="button" @click="checkHealth"><RotateCw :size="14" />Refresh</button></div>
           </article>
@@ -1170,7 +1292,7 @@ onBeforeUnmount(() => {
 
         <section v-if="activeNav === 'SiteDetail' && selectedSite" class="site-detail-view">
           <div class="site-detail-header"><div><button class="text-button" type="button" @click="closeSiteDetail">← All sites</button><div class="eyebrow"><span class="eyebrow-pulse" /> SITE WORKSPACE</div><h1>{{ selectedSite.hostname || selectedSite.name }}.</h1><p class="hero-copy">{{ frameworkLabel(selectedSite.framework) }} · {{ selectedSite.project_root }}</p></div><div class="hero-actions"><a v-if="sitePublicURL(selectedSite).startsWith('http')" class="button button-secondary" :href="sitePublicURL(selectedSite)" target="_blank" rel="noreferrer"><Globe2 :size="15" />Visit</a><button class="button button-primary" type="button" :disabled="!selectedSite.repository || selectedSite.strategy !== 'atomic'" @click="deploySite(selectedSite)"><Play :size="15" />Deploy</button></div></div>
-          <div class="site-tabs"><button type="button" :class="{ active: selectedSiteTab === 'Overview' }" @click="selectedSiteTab = 'Overview'">Overview</button><button type="button" :class="{ active: selectedSiteTab === 'Repository' }" @click="openRepositoryTab">Repository</button><button type="button" :class="{ active: selectedSiteTab === 'Deployments' }" @click="selectedSiteTab = 'Deployments'">Deployments <span>{{ siteDeployments.length }}</span></button></div>
+          <div class="site-tabs"><button type="button" :class="{ active: selectedSiteTab === 'Overview' }" @click="selectedSiteTab = 'Overview'">Overview</button><button type="button" :class="{ active: selectedSiteTab === 'Repository' }" @click="openRepositoryTab">Repository</button><button type="button" :class="{ active: selectedSiteTab === 'Settings' }" @click="openSiteSettings">Settings</button><button type="button" :class="{ active: selectedSiteTab === 'Deployments' }" @click="selectedSiteTab = 'Deployments'">Deployments <span>{{ siteDeployments.length }}</span></button></div>
           <template v-if="selectedSiteTab === 'Overview'">
             <div class="site-meta-grid"><article class="panel site-meta-card"><span>Framework</span><strong>{{ frameworkLabel(selectedSite.framework) }}</strong></article><article class="panel site-meta-card"><span>PHP</span><strong>{{ siteRuntime(selectedSite, 'php_version', '8.5') }}</strong></article><article class="panel site-meta-card"><span>HTTP server</span><strong>{{ siteRuntime(selectedSite, 'http_server', 'Unknown') }}</strong></article><article class="panel site-meta-card"><span>Public IP</span><button type="button" @click="copyPublicIP(selectedSite)">{{ siteRuntime(selectedSite, 'public_ip', 'Not detected') }}</button></article><article class="panel site-meta-card"><span>Public Web</span><a :href="sitePublicURL(selectedSite)" target="_blank" rel="noreferrer">{{ sitePublicURL(selectedSite) }}</a></article><article class="panel site-meta-card"><span>Created</span><strong>{{ createdLabel(selectedSite.created_at) }}</strong></article></div>
             <div class="detail-section-heading"><div><div class="panel-kicker">SOURCE HISTORY</div><h2>Commits</h2></div><span class="muted-copy">{{ selectedSite.repository?.branch || 'main' }}</span></div>
@@ -1178,12 +1300,29 @@ onBeforeUnmount(() => {
             <div v-else-if="siteCommits.length" class="commit-table"><div v-for="commit in siteCommits" :key="commit.sha" class="commit-row" :class="commit.status"><span class="commit-state" :class="commit.status" v-if="commit.deployed"><Check :size="13" /></span><span class="commit-state failed" v-else-if="commit.status === 'failed'"><CircleX :size="13" /></span><span class="commit-state pending" v-else><CircleDot :size="13" /></span><code>{{ commit.sha.slice(0, 7) }}</code><span class="commit-message"><strong>{{ commit.message.split('\n')[0] }}</strong><small>{{ commit.author || 'GitHub' }} · {{ relativeTime(commit.created_at) }}</small></span><span class="commit-status">{{ commit.deployed ? 'Deployed' : (commit.status === 'failed' ? 'Failed' : 'Not deployed') }}</span><button class="button button-secondary commit-deploy" type="button" :disabled="deployingCommitSha !== '' || commit.deployed || selectedSite.strategy !== 'atomic'" @click="deployCommit(commit)"><RotateCw v-if="deployingCommitSha === commit.sha" :size="13" class="spin" /><span v-else>Deploy</span></button></div></div>
             <div v-else class="management-empty"><GitBranch :size="22" /><strong>No commits available</strong><span>Connect GitHub and configure a repository for this site to see commit history.</span></div>
           </template>
+          <template v-else-if="selectedSiteTab === 'Settings'">
+            <div class="site-settings-layout">
+              <section class="site-settings-section"><div class="site-settings-heading"><div><div class="panel-kicker">DEPLOYMENT</div><h2>Deployment</h2></div><span class="muted-copy">{{ selectedSite.repository?.branch || 'No branch selected' }}</span></div>
+                <label class="settings-toggle-row"><span><strong>Push to deploy</strong><small>Deploy automatically after every push to the selected branch.</small></span><input v-model="siteSettingsForm.push_to_deploy" type="checkbox" /></label>
+                <label class="site-field"><span>Deploy script</span><textarea v-model="siteSettingsForm.deploy_script" rows="7" placeholder="#!/bin/sh&#10;# Optional commands executed during deployment"></textarea><small>Optional commands executed as part of the deployment. Review the script before enabling automatic deploys.</small></label>
+                <label class="site-field"><span>Deployment retention</span><input v-model.number="siteSettingsForm.deployment_retention" type="number" min="0" max="100" /><small>Configure the number of previous deployments to retain after each successful deployment. Default: 4.</small></label>
+              </section>
+              <section class="site-settings-section"><div class="site-settings-heading"><div><div class="panel-kicker">GENERAL</div><h2>General</h2></div></div>
+                <label class="site-field"><span>Framework</span><select v-model="siteSettingsForm.framework"><option v-for="option in frameworkSettingOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><small>The framework used by the installed application. Changing the framework does not modify the Nginx/apache configuration.</small></label>
+                <label v-if="siteSettingsForm.framework === 'custom'" class="site-field"><span>Custom framework name</span><input v-model="siteSettingsForm.custom_framework" maxlength="100" type="text" placeholder="e.g. Astro SSR" /><small>{{ siteSettingsForm.custom_framework.length }}/100 characters</small></label>
+                <div class="site-field"><span>Tags</span><div class="tag-editor"><span v-for="tag in siteSettingsForm.tags" :key="tag" class="tag-badge">{{ tag }}<button type="button" :aria-label="`Remove ${tag}`" @click="removeSiteTag(tag)"><X :size="11" /></button></span><input v-model="siteTagDraft" type="text" placeholder="Type a tag and press Enter" @keydown="onSiteTagKeydown" /></div><small>Add as many tags as needed for organization and later filtering.</small></div>
+                <label class="site-field color-field"><span>Color</span><div class="color-control"><input v-model="siteSettingsForm.color" type="color" /><code>{{ siteSettingsForm.color }}</code></div><small>Used later to identify site cards visually.</small></label>
+              </section>
+            </div>
+            <section class="site-settings-section directories-section"><div class="site-settings-heading"><div><div class="panel-kicker">DIRECTORIES</div><h2>Directories</h2></div><span class="muted-copy">Read-only</span></div><div class="directory-grid"><label class="site-field"><span>Root directory</span><div class="copy-input"><input :value="selectedSite.project_root" readonly @click="copySiteDirectory(selectedSite.project_root)" /><button type="button" title="Copy root directory" @click="copySiteDirectory(selectedSite.project_root)"><ArrowUpRight :size="13" /></button></div></label><label class="site-field"><span>Web directory</span><div class="copy-input"><input :value="selectedSite.web_root" readonly @click="copySiteDirectory(selectedSite.web_root)" /><button type="button" title="Copy web directory" @click="copySiteDirectory(selectedSite.web_root)"><ArrowUpRight :size="13" /></button></div></label></div></section>
+            <div v-if="siteSettingsError" class="discovery-error"><CircleAlert :size="16" />{{ siteSettingsError }}</div><div v-if="siteSettingsMessage" class="discovery-success"><Check :size="16" />{{ siteSettingsMessage }}</div><div class="settings-actions site-settings-actions"><span /><button class="button button-primary" type="button" :disabled="siteSettingsSaving" @click="saveSiteSettings">{{ siteSettingsSaving ? 'Saving…' : 'Save site settings' }} <Check :size="14" /></button></div>
+          </template>
           <template v-else-if="selectedSiteTab === 'Repository'">
             <div class="detail-section-heading"><div><div class="panel-kicker">SOURCE CONFIGURATION</div><h2>Repository</h2></div><span class="connection-badge" :class="{ connected: !!selectedSite.repository }"><span class="status-dot" />{{ selectedSite.repository ? 'Configured' : 'Not configured' }}</span></div>
             <div class="repository-editor panel">
               <div class="wizard-intro"><GitBranch :size="20" /><div><strong>Asociază sursa site-ului</strong><span>Alege un repository din GitHub Connector sau editează URL-ul și branch-ul manual. Această configurație este folosită la citirea commit-urilor și la deploy.</span></div></div>
               <div class="form-grid"><label><span>Provider</span><select v-model="repositoryForm.provider"><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="bitbucket">Bitbucket</option><option value="generic">Other Git server</option></select></label><label><span>Branch</span><select v-if="repositoryForm.provider === 'github'" v-model="repositoryForm.branch" :disabled="!repositoryForm.github_full_name || githubBranchesLoading"><option v-if="!repositoryForm.github_full_name" value="">Select repository first</option><option v-else-if="githubBranchesLoading" value="">Loading branches…</option><option v-for="branch in githubBranches" :key="branch" :value="branch">{{ branch }}</option></select><input v-else v-model="repositoryForm.branch" type="text" placeholder="main" /></label></div>
-              <label><span>Repository from connected GitHub</span><select :value="repositoryForm.github_full_name" @change="selectSiteGithubRepository(($event.target as HTMLSelectElement).value)"><option value="">Select a repository or use the URL below</option><option v-for="repository in githubRepositories" :key="`${repository.installation_id}:${repository.id}`" :value="repository.full_name">{{ repository.full_name }}{{ repository.private ? ' · private' : '' }} · {{ repository.account_login }}</option></select><small v-if="githubLoading">Loading repositories…</small><small v-else-if="!githubState.connected">GitHub nu este conectat. Îl poți conecta din Settings.</small></label>
+              <label><span>Repository from connected GitHub</span><select :value="repositoryForm.github_full_name" @change="selectSiteGithubRepository(($event.target as HTMLSelectElement).value)"><option value="">Select a repository or use the URL below</option><optgroup v-for="group in githubRepositoryGroups" :key="group.account" :label="`@${group.account}`"><option v-for="repository in group.repositories" :key="`${repository.installation_id}:${repository.id}`" :value="repository.full_name">{{ repository.name }}{{ repository.private ? ' · private' : '' }}</option></optgroup></select><small v-if="githubLoading">Loading repositories…</small><small v-else-if="!githubState.connected">GitHub nu este conectat. Îl poți conecta din Settings.</small><button v-if="githubState.connected" class="text-button" type="button" @click="installGithubApp">Add another GitHub account <ArrowUpRight :size="13" /></button></label>
               <label><span>Repository clone URL</span><input v-model="repositoryForm.clone_url" type="text" placeholder="https://github.com/owner/project.git" /><small>Repository-ul poate fi public sau privat. Pentru private, accesul trebuie acordat în instalarea GitHub Connector.</small></label><div v-if="githubBranchesError" class="wizard-hint warning"><CircleAlert :size="15" /><span>{{ githubBranchesError }}</span></div>
               <div class="strategy-grid"><label class="strategy-card" :class="{ selected: repositoryForm.strategy === 'in_place' }"><input v-model="repositoryForm.strategy" type="radio" value="in_place" /><span class="strategy-title">In-place <em>direct</em></span><span>Sincronizează direct rădăcina Web Station existentă. Este potrivit când site-ul are date și fișiere locale care trebuie păstrate.</span></label><label class="strategy-card" :class="{ selected: repositoryForm.strategy === 'atomic' }"><input v-model="repositoryForm.strategy" type="radio" value="atomic" /><span class="strategy-title">Atomic releases <em>safer rollback</em></span><span>Construiește release-uri separate și schimbă directorul activ numai după finalizarea deploy-ului.</span></label></div>
               <div class="wizard-hint"><CircleHelp :size="15" /><span>La trecerea pe Atomic, WebRoot-ul site-ului este setat automat la <code>{{ selectedSite.project_root }}/current</code>. La In-place revine la project root.</span></div>
@@ -1223,6 +1362,15 @@ onBeforeUnmount(() => {
             <div class="settings-note"><CircleHelp :size="15" /><span>Setează Setup URL-ul GitHub App la <code>{{ githubState.setup_url || '/releasestation/api/v1/integrations/github/setup' }}</code>, apoi folosește butonul de mai sus. După instalare, repository-urile private selectate în GitHub apar în wizard.</span></div>
             <div v-if="githubState.installations.length" class="installation-list"><div v-for="installation in githubState.installations" :key="installation.github_installation_id" class="installation-row"><GitBranch :size="15" /><span><strong>{{ installation.account_login }}</strong><small>{{ installation.account_type }} · {{ installation.repository_selection }} repositories · installation {{ installation.github_installation_id }}</small></span><button class="button button-secondary" type="button" @click="loadGithubRepositories">Refresh repositories</button></div></div>
           </article>
+        </section>
+
+        <section v-if="activeNav === 'Help'" class="help-view">
+          <div class="sites-management-header"><div><div class="eyebrow"><span class="eyebrow-pulse" /> DOCUMENTATION</div><h1>Help center.</h1><p class="hero-copy">Un ghid scurt pentru configurarea Release Station și remedierea verificărilor roșii din System Overview.</p></div><div class="hero-actions"><button class="button button-secondary" type="button" @click="activeNav = 'Dashboard'"><LayoutDashboard :size="15" />Back to dashboard</button></div></div>
+          <div class="help-layout">
+            <aside class="panel help-navigation"><button type="button" :class="{ active: helpTopic === 'intro' }" @click="helpTopic = 'intro'"><LifeBuoy :size="15" />Getting started</button><div class="help-nav-label">SYSTEM OVERVIEW</div><button v-for="item in systemItems" :key="item.label" type="button" :class="{ active: helpTopic === item.label }" @click="helpTopic = item.label"><component :is="item.icon" :size="15" />{{ item.label }}<span class="help-nav-state" :class="item.state">{{ item.state === 'ready' ? 'OK' : 'FIX' }}</span></button></aside>
+            <article v-if="helpTopic === 'intro'" class="panel help-article"><div class="panel-kicker">ZION RELEASE STATION</div><h2>Deploy sites from Synology with confidence</h2><p>Release Station descoperă site-uri Web Station, le conectează la repository-uri GitHub și păstrează istoricul, starea release-urilor și logurile într-un singur control plane local.</p><div class="help-card-grid"><div><GitBranch :size="17" /><strong>Connect source control</strong><span>Conectează GitHub din Settings, aprobă repository-urile private, apoi selectează repository-ul și branch-ul pentru fiecare site.</span></div><div><Globe2 :size="17" /><strong>Configure a site</strong><span>Importă un site Web Station sau adaugă-l manual. Taburile Repository și Settings păstrează configurația deployment-ului.</span></div><div><UploadCloud :size="17" /><strong>Deploy and observe</strong><span>Alege Atomic releases pentru activare cu rollback, pornește deployment-ul și verifică logurile capturate.</span></div></div><div class="help-callout"><CircleHelp :size="16" /><span>Un card roșu din System Overview nu înseamnă că datele site-ului sunt pierdute. Deschide articolul lui din meniul din stânga pentru pașii de remediere.</span></div></article>
+            <article v-else class="panel help-article"><div class="panel-kicker">SYSTEM OVERVIEW / {{ helpTopic }}</div><h2>{{ helpArticles[helpTopic]?.title || helpTopic }}</h2><p>{{ helpArticles[helpTopic]?.summary || 'Verificarea acestui serviciu este furnizată de API-ul local.' }}</p><div class="help-status-line"><span class="status-dot" :class="{ 'status-dot-warning': systemItems.find((item) => item.label === helpTopic)?.state !== 'ready' }" /><strong>{{ systemItems.find((item) => item.label === helpTopic)?.state === 'ready' ? 'Verification passed' : 'Action required' }}</strong><span>{{ systemItems.find((item) => item.label === helpTopic)?.detail || 'No live detail available.' }}</span></div><h3>How to fix it</h3><ol class="help-steps"><li v-for="step in (helpArticles[helpTopic]?.steps || [])" :key="step">{{ step }}</li></ol><div class="help-callout"><CircleHelp :size="16" /><span>După remediere, revino pe Dashboard și apasă Refresh în System Overview pentru o verificare live.</span></div></article>
+          </div>
         </section>
 
         <footer v-if="activeNav === 'Dashboard'" class="footer-note"><span><ShieldCheck :size="14" />Protected by ReleaseStation guardrails</span><span>v0.1.0 · Foundation milestone</span></footer>
@@ -1285,7 +1433,7 @@ onBeforeUnmount(() => {
           <div v-else-if="wizardStep === 2" class="wizard-body">
             <div class="wizard-intro"><GitBranch :size="20" /><div><strong>Ce repository va alimenta site-ul?</strong><span>Alege un repository acordat GitHub App sau introdu manual un URL. Repository-urile private apar aici numai după instalarea App-ului cu acces selectat.</span></div></div>
             <div class="form-grid"><label><span>Provider</span><select v-model="wizardForm.provider"><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="bitbucket">Bitbucket</option><option value="generic">Other Git server</option></select></label><label><span>Branch</span><select v-if="wizardForm.provider === 'github'" v-model="wizardForm.branch" :disabled="!wizardForm.githubFullName || githubBranchesLoading"><option v-if="!wizardForm.githubFullName" value="">Select repository first</option><option v-else-if="githubBranchesLoading" value="">Loading branches…</option><option v-for="branch in githubBranches" :key="branch" :value="branch">{{ branch }}</option></select><input v-else v-model="wizardForm.branch" type="text" placeholder="main" /></label></div>
-            <label v-if="wizardForm.provider === 'github'"><span>Repository from GitHub App</span><select :value="wizardForm.githubFullName" @change="onGithubRepositoryChange"><option value="">Select a granted repository or enter URL below</option><option v-for="repository in githubRepositories" :key="`${repository.installation_id}:${repository.id}`" :value="repository.full_name">{{ repository.full_name }}{{ repository.private ? ' · private' : '' }} · {{ repository.account_login }}</option></select><small v-if="githubLoading">Loading repositories…</small><small v-else-if="githubState.connected && !githubRepositories.length">No granted repositories found. Refresh GitHub App access.</small></label>
+            <label v-if="wizardForm.provider === 'github'"><span>Repository from GitHub App</span><select :value="wizardForm.githubFullName" @change="onGithubRepositoryChange"><option value="">Select a granted repository or enter URL below</option><optgroup v-for="group in githubRepositoryGroups" :key="group.account" :label="`@${group.account}`"><option v-for="repository in group.repositories" :key="`${repository.installation_id}:${repository.id}`" :value="repository.full_name">{{ repository.name }}{{ repository.private ? ' · private' : '' }}</option></optgroup></select><small v-if="githubLoading">Loading repositories…</small><small v-else-if="githubState.connected && !githubRepositories.length">No granted repositories found. Add another GitHub account or refresh access.</small><button v-if="githubState.connected" class="text-button" type="button" @click="installGithubApp">Add another GitHub account <ArrowUpRight :size="13" /></button></label>
             <label><span>Repository clone URL</span><input v-model="wizardForm.cloneUrl" type="text" placeholder="https://github.com/matrixn/my-site.git" /></label>
             <div v-if="githubBranchesError" class="wizard-hint warning"><CircleAlert :size="15" /><span>{{ githubBranchesError }}</span></div><div v-if="githubState.connected" class="wizard-hint"><Check :size="15" /><span>GitHub App este conectată. Repository-urile private din listă sunt cele aprobate explicit în GitHub.</span></div><div v-else class="wizard-hint warning"><CircleAlert :size="15" /><span>GitHub App nu este conectată. Poți continua cu un URL public/manual sau poți instala App-ul din Settings.</span></div>
           </div>

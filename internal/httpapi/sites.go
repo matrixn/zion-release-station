@@ -22,17 +22,23 @@ import (
 )
 
 type sitePayload struct {
-	Name        string `json:"name"`
-	Slug        string `json:"slug"`
-	URL         string `json:"url"`
-	Hostname    string `json:"hostname"`
-	ProjectRoot string `json:"project_root"`
-	WebRoot     string `json:"web_root"`
-	Framework   string `json:"framework"`
-	Strategy    string `json:"strategy"`
-	Status      string `json:"status"`
-	Runtime     any    `json:"runtime"`
-	Repository  *struct {
+	Name                string   `json:"name"`
+	Slug                string   `json:"slug"`
+	URL                 string   `json:"url"`
+	Hostname            string   `json:"hostname"`
+	ProjectRoot         string   `json:"project_root"`
+	WebRoot             string   `json:"web_root"`
+	Framework           string   `json:"framework"`
+	CustomFramework     string   `json:"custom_framework"`
+	Strategy            string   `json:"strategy"`
+	Status              string   `json:"status"`
+	Tags                []string `json:"tags"`
+	Color               string   `json:"color"`
+	PushToDeploy        *bool    `json:"push_to_deploy"`
+	DeployScript        string   `json:"deploy_script"`
+	DeploymentRetention *int     `json:"deployment_retention"`
+	Runtime             any      `json:"runtime"`
+	Repository          *struct {
 		Provider             string `json:"provider"`
 		CloneURL             string `json:"clone_url"`
 		Branch               string `json:"branch"`
@@ -66,6 +72,16 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			input.Runtime = runtime
+			input.CustomFramework = payload.CustomFramework
+			input.Tags = payload.Tags
+			input.Color = payload.Color
+			if payload.PushToDeploy != nil {
+				input.PushToDeploy = *payload.PushToDeploy
+			}
+			input.DeployScript = payload.DeployScript
+			if payload.DeploymentRetention != nil {
+				input.DeploymentRetention = *payload.DeploymentRetention
+			}
 			if _, err := s.sites.FindByProjectRoot(r.Context(), input.ProjectRoot); err == nil {
 				writeError(w, http.StatusConflict, "SITE_EXISTS", "A site with this project root is already managed.")
 				return
@@ -92,6 +108,14 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only GET, PUT and DELETE are supported.")
+		return
+	}
+	if strings.HasSuffix(id, "/settings") {
+		if r.Method == http.MethodGet || r.Method == http.MethodPut {
+			s.handleSiteSettings(w, r, strings.TrimSuffix(id, "/settings"))
+			return
+		}
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only GET and PUT are supported.")
 		return
 	}
 	if strings.HasSuffix(id, "/deploy") {
@@ -153,6 +177,16 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		input.Runtime = runtime
+		input.CustomFramework = payload.CustomFramework
+		input.Tags = payload.Tags
+		input.Color = payload.Color
+		if payload.PushToDeploy != nil {
+			input.PushToDeploy = *payload.PushToDeploy
+		}
+		input.DeployScript = payload.DeployScript
+		if payload.DeploymentRetention != nil {
+			input.DeploymentRetention = *payload.DeploymentRetention
+		}
 		updated, err := s.sites.Update(r.Context(), id, input)
 		if errors.Is(err, sites.ErrNotFound) {
 			writeError(w, http.StatusNotFound, "NOT_FOUND", "Site not found.")
@@ -261,7 +295,8 @@ func (s *Server) handleSiteRepository(w http.ResponseWriter, r *http.Request, si
 		}
 		updated, err := s.sites.Update(r.Context(), siteID, sites.Input{
 			Name: site.Name, Slug: site.Slug, Hostname: site.Hostname, ProjectRoot: site.ProjectRoot, WebRoot: webRoot,
-			Framework: site.Framework, Strategy: strategy, Status: site.Status, Runtime: site.Runtime,
+			Framework: site.Framework, CustomFramework: site.CustomFramework, Strategy: strategy, Status: site.Status, Runtime: site.Runtime,
+			Tags: site.Tags, Color: site.Color, PushToDeploy: site.PushToDeploy, DeployScript: site.DeployScript, DeploymentRetention: site.DeploymentRetention,
 			Repository: repositoryInput(payload.Repository),
 		})
 		if err != nil {
@@ -270,6 +305,70 @@ func (s *Server) handleSiteRepository(w http.ResponseWriter, r *http.Request, si
 		}
 		writeJSON(w, http.StatusOK, map[string]any{"data": updated})
 	}
+}
+
+func (s *Server) handleSiteSettings(w http.ResponseWriter, r *http.Request, siteID string) {
+	if siteID == "" || strings.Contains(siteID, "/") {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Site not found.")
+		return
+	}
+	site, err := s.sites.Get(r.Context(), siteID)
+	if errors.Is(err, sites.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Site not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "SITES_UNAVAILABLE", err.Error())
+		return
+	}
+	if r.Method == http.MethodGet {
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
+			"framework": site.Framework, "custom_framework": site.CustomFramework, "tags": site.Tags, "color": site.Color,
+			"push_to_deploy": site.PushToDeploy, "deploy_script": site.DeployScript, "deployment_retention": site.DeploymentRetention,
+			"project_root": site.ProjectRoot, "web_root": site.WebRoot,
+		}})
+		return
+	}
+	var payload struct {
+		Framework           string   `json:"framework"`
+		CustomFramework     string   `json:"custom_framework"`
+		Tags                []string `json:"tags"`
+		Color               string   `json:"color"`
+		PushToDeploy        *bool    `json:"push_to_deploy"`
+		DeployScript        string   `json:"deploy_script"`
+		DeploymentRetention *int     `json:"deployment_retention"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_SETTINGS", err.Error())
+		return
+	}
+	framework := strings.TrimSpace(payload.Framework)
+	if framework == "" {
+		framework = site.Framework
+	}
+	customFramework := strings.TrimSpace(payload.CustomFramework)
+	if len([]rune(customFramework)) > 100 {
+		writeError(w, http.StatusBadRequest, "INVALID_SETTINGS", "Custom framework must be at most 100 characters.")
+		return
+	}
+	retention := site.DeploymentRetention
+	if payload.DeploymentRetention != nil {
+		retention = *payload.DeploymentRetention
+	}
+	push := site.PushToDeploy
+	if payload.PushToDeploy != nil {
+		push = *payload.PushToDeploy
+	}
+	updated, err := s.sites.Update(r.Context(), siteID, sites.Input{
+		Name: site.Name, Slug: site.Slug, Hostname: site.Hostname, ProjectRoot: site.ProjectRoot, WebRoot: site.WebRoot,
+		Framework: framework, CustomFramework: customFramework, Strategy: site.Strategy, Status: site.Status, Runtime: site.Runtime,
+		Tags: payload.Tags, Color: payload.Color, PushToDeploy: push, DeployScript: payload.DeployScript, DeploymentRetention: retention,
+	})
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_SETTINGS", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": updated})
 }
 
 func (s *Server) handleSiteDeployments(w http.ResponseWriter, r *http.Request, siteID string) {

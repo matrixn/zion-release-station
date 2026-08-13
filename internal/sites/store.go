@@ -17,20 +17,26 @@ var slugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 var ErrNotFound = errors.New("site not found")
 
 type Site struct {
-	ID          string          `json:"id"`
-	Name        string          `json:"name"`
-	Slug        string          `json:"slug"`
-	Hostname    string          `json:"hostname"`
-	ProjectRoot string          `json:"project_root"`
-	WebRoot     string          `json:"web_root"`
-	Framework   string          `json:"framework"`
-	Strategy    string          `json:"strategy"`
-	Status      string          `json:"status"`
-	Runtime     json.RawMessage `json:"runtime,omitempty"`
-	CreatedAt   string          `json:"created_at"`
-	UpdatedAt   string          `json:"updated_at"`
-	ArchivedAt  *string         `json:"archived_at,omitempty"`
-	Repository  *Repository     `json:"repository,omitempty"`
+	ID                  string          `json:"id"`
+	Name                string          `json:"name"`
+	Slug                string          `json:"slug"`
+	Hostname            string          `json:"hostname"`
+	ProjectRoot         string          `json:"project_root"`
+	WebRoot             string          `json:"web_root"`
+	Framework           string          `json:"framework"`
+	CustomFramework     string          `json:"custom_framework,omitempty"`
+	Strategy            string          `json:"strategy"`
+	Status              string          `json:"status"`
+	Tags                []string        `json:"tags"`
+	Color               string          `json:"color"`
+	PushToDeploy        bool            `json:"push_to_deploy"`
+	DeployScript        string          `json:"deploy_script"`
+	DeploymentRetention int             `json:"deployment_retention"`
+	Runtime             json.RawMessage `json:"runtime,omitempty"`
+	CreatedAt           string          `json:"created_at"`
+	UpdatedAt           string          `json:"updated_at"`
+	ArchivedAt          *string         `json:"archived_at,omitempty"`
+	Repository          *Repository     `json:"repository,omitempty"`
 }
 
 type Repository struct {
@@ -59,16 +65,22 @@ type RepositoryInput struct {
 }
 
 type Input struct {
-	Name        string
-	Slug        string
-	Hostname    string
-	ProjectRoot string
-	WebRoot     string
-	Framework   string
-	Strategy    string
-	Status      string
-	Runtime     any
-	Repository  *RepositoryInput
+	Name                string
+	Slug                string
+	Hostname            string
+	ProjectRoot         string
+	WebRoot             string
+	Framework           string
+	CustomFramework     string
+	Strategy            string
+	Status              string
+	Tags                []string
+	Color               string
+	PushToDeploy        bool
+	DeployScript        string
+	DeploymentRetention int
+	Runtime             any
+	Repository          *RepositoryInput
 }
 
 type Store struct {
@@ -80,20 +92,23 @@ func NewStore(db *sql.DB) *Store {
 }
 
 func (s *Store) List(ctx context.Context) ([]Site, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, slug, COALESCE(hostname, ''), project_root, COALESCE(web_root, ''), framework, strategy, status, COALESCE(runtime_json, ''), created_at, updated_at, archived_at FROM sites WHERE archived_at IS NULL ORDER BY name COLLATE NOCASE`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, slug, COALESCE(hostname, ''), project_root, COALESCE(web_root, ''), framework, COALESCE(custom_framework, ''), strategy, status, COALESCE(runtime_json, ''), COALESCE(tags_json, '[]'), COALESCE(color, '#f28c3b'), COALESCE(push_to_deploy, 0), COALESCE(deploy_script, ''), COALESCE(deployment_retention, 4), created_at, updated_at, archived_at FROM sites WHERE archived_at IS NULL ORDER BY name COLLATE NOCASE`)
 	if err != nil {
 		return nil, fmt.Errorf("list sites: %w", err)
 	}
 	var result []Site
 	for rows.Next() {
 		var site Site
-		var runtime string
-		if err := rows.Scan(&site.ID, &site.Name, &site.Slug, &site.Hostname, &site.ProjectRoot, &site.WebRoot, &site.Framework, &site.Strategy, &site.Status, &runtime, &site.CreatedAt, &site.UpdatedAt, &site.ArchivedAt); err != nil {
+		var runtime, tags string
+		var push int
+		if err := rows.Scan(&site.ID, &site.Name, &site.Slug, &site.Hostname, &site.ProjectRoot, &site.WebRoot, &site.Framework, &site.CustomFramework, &site.Strategy, &site.Status, &runtime, &tags, &site.Color, &push, &site.DeployScript, &site.DeploymentRetention, &site.CreatedAt, &site.UpdatedAt, &site.ArchivedAt); err != nil {
 			return nil, fmt.Errorf("scan site: %w", err)
 		}
 		if runtime != "" {
 			site.Runtime = json.RawMessage(runtime)
 		}
+		site.PushToDeploy = push != 0
+		_ = json.Unmarshal([]byte(tags), &site.Tags)
 		result = append(result, site)
 	}
 	if err := rows.Err(); err != nil {
@@ -113,8 +128,9 @@ func (s *Store) List(ctx context.Context) ([]Site, error) {
 
 func (s *Store) Get(ctx context.Context, id string) (Site, error) {
 	var site Site
-	var runtime string
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, slug, COALESCE(hostname, ''), project_root, COALESCE(web_root, ''), framework, strategy, status, COALESCE(runtime_json, ''), created_at, updated_at, archived_at FROM sites WHERE id = ? AND archived_at IS NULL`, id).Scan(&site.ID, &site.Name, &site.Slug, &site.Hostname, &site.ProjectRoot, &site.WebRoot, &site.Framework, &site.Strategy, &site.Status, &runtime, &site.CreatedAt, &site.UpdatedAt, &site.ArchivedAt)
+	var runtime, tags string
+	var push int
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, slug, COALESCE(hostname, ''), project_root, COALESCE(web_root, ''), framework, COALESCE(custom_framework, ''), strategy, status, COALESCE(runtime_json, ''), COALESCE(tags_json, '[]'), COALESCE(color, '#f28c3b'), COALESCE(push_to_deploy, 0), COALESCE(deploy_script, ''), COALESCE(deployment_retention, 4), created_at, updated_at, archived_at FROM sites WHERE id = ? AND archived_at IS NULL`, id).Scan(&site.ID, &site.Name, &site.Slug, &site.Hostname, &site.ProjectRoot, &site.WebRoot, &site.Framework, &site.CustomFramework, &site.Strategy, &site.Status, &runtime, &tags, &site.Color, &push, &site.DeployScript, &site.DeploymentRetention, &site.CreatedAt, &site.UpdatedAt, &site.ArchivedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return Site{}, ErrNotFound
@@ -124,6 +140,8 @@ func (s *Store) Get(ctx context.Context, id string) (Site, error) {
 	if runtime != "" {
 		site.Runtime = json.RawMessage(runtime)
 	}
+	site.PushToDeploy = push != 0
+	_ = json.Unmarshal([]byte(tags), &site.Tags)
 	if err := s.attachRepository(ctx, &site); err != nil {
 		return Site{}, err
 	}
@@ -155,7 +173,15 @@ func (s *Store) Create(ctx context.Context, input Input) (Site, error) {
 	if err != nil {
 		return Site{}, err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO sites(id, name, slug, hostname, project_root, web_root, framework, strategy, status, runtime_json, created_at, updated_at) VALUES (?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''), ?, ?, ?, NULLIF(?, ''), ?, ?)`, id, input.Name, input.Slug, input.Hostname, input.ProjectRoot, input.WebRoot, input.Framework, input.Strategy, input.Status, runtime, now, now)
+	tags, err := json.Marshal(normalizeTags(input.Tags))
+	if err != nil {
+		return Site{}, fmt.Errorf("encode site tags: %w", err)
+	}
+	retention := input.DeploymentRetention
+	if retention == 0 {
+		retention = 4
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO sites(id, name, slug, hostname, project_root, web_root, framework, custom_framework, strategy, status, runtime_json, tags_json, color, push_to_deploy, deploy_script, deployment_retention, created_at, updated_at) VALUES (?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''), ?, NULLIF(?, ''), ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?)`, id, input.Name, input.Slug, input.Hostname, input.ProjectRoot, input.WebRoot, input.Framework, input.CustomFramework, input.Strategy, input.Status, runtime, string(tags), normalizeColor(input.Color), boolInt(input.PushToDeploy), strings.TrimSpace(input.DeployScript), retention, now, now)
 	if err != nil {
 		return Site{}, fmt.Errorf("create site: %w", err)
 	}
@@ -176,7 +202,11 @@ func (s *Store) Update(ctx context.Context, id string, input Input) (Site, error
 	if err != nil {
 		return Site{}, err
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE sites SET name = ?, slug = ?, hostname = NULLIF(?, ''), project_root = ?, web_root = NULLIF(?, ''), framework = ?, strategy = ?, status = ?, runtime_json = NULLIF(?, ''), updated_at = ? WHERE id = ? AND archived_at IS NULL`, input.Name, input.Slug, input.Hostname, input.ProjectRoot, input.WebRoot, input.Framework, input.Strategy, input.Status, runtime, time.Now().UTC().Format(time.RFC3339Nano), id)
+	tags, err := json.Marshal(normalizeTags(input.Tags))
+	if err != nil {
+		return Site{}, fmt.Errorf("encode site tags: %w", err)
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE sites SET name = ?, slug = ?, hostname = NULLIF(?, ''), project_root = ?, web_root = NULLIF(?, ''), framework = ?, custom_framework = NULLIF(?, ''), strategy = ?, status = ?, runtime_json = NULLIF(?, ''), tags_json = ?, color = ?, push_to_deploy = ?, deploy_script = ?, deployment_retention = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL`, input.Name, input.Slug, input.Hostname, input.ProjectRoot, input.WebRoot, input.Framework, input.CustomFramework, input.Strategy, input.Status, runtime, string(tags), normalizeColor(input.Color), boolInt(input.PushToDeploy), strings.TrimSpace(input.DeployScript), input.DeploymentRetention, time.Now().UTC().Format(time.RFC3339Nano), id)
 	if err != nil {
 		return Site{}, fmt.Errorf("update site: %w", err)
 	}
@@ -258,12 +288,47 @@ func validateInput(input Input) error {
 	if input.Strategy != "in_place" && input.Strategy != "atomic" {
 		return fmt.Errorf("strategy must be in_place or atomic")
 	}
+	if input.DeploymentRetention < 0 || input.DeploymentRetention > 100 {
+		return fmt.Errorf("deployment retention must be between 0 and 100")
+	}
 	if input.Repository != nil {
 		if err := validateRepository(*input.Repository); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+func normalizeTags(tags []string) []string {
+	result := make([]string, 0, len(tags))
+	seen := map[string]struct{}{}
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag == "" || len([]rune(tag)) > 50 {
+			continue
+		}
+		key := strings.ToLower(tag)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		result = append(result, tag)
+	}
+	return result
+}
+
+func normalizeColor(value string) string {
+	value = strings.TrimSpace(value)
+	if len(value) == 7 && value[0] == '#' {
+		return value
+	}
+	return "#f28c3b"
+}
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func validateRepository(input RepositoryInput) error {
