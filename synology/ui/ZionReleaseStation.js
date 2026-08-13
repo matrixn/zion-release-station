@@ -85,11 +85,11 @@
     '            <div v-else class="zion-native-note">The /releasestation/ web route is disabled. Related URL and service settings are hidden.</div>',
     '          </article>',
     '          <article v-if="github.mode === \'managed\'" class="zion-native-card zion-native-github-settings">',
-    '            <h2>Connect GitHub</h2>',
+    '            <h2>GitHub connection</h2>',
     '            <p>Conectează GitHub prin aplicația Zion fără să creezi o GitHub App proprie și fără să încarci o cheie PEM pe NAS.</p>',
     '            <div class="zion-native-status"><span class="zion-native-dot" :class="github.connected ? \'healthy\' : \'warning\'"></span>{{ github.connected ? \'GitHub connected through Zion\' : \'GitHub is not connected\' }}</div>',
     '            <p v-if="github.account_login">Account: {{ github.account_login }}</p>',
-    '            <div class="zion-native-actions"><button class="zion-native-button primary" type="button" @click="installGithubApp">{{ github.connected ? \'Manage GitHub\' : \'Connect GitHub\' }} ↗</button><button class="zion-native-button" type="button" @click="loadGithub">Refresh</button></div>',
+    '            <div class="zion-native-actions"><button class="zion-native-button" type="button" @click="loadGithub">Refresh status</button><button class="zion-native-button primary" type="button" @click="openWorkspace">Open workspace ↗</button></div>',
     '            <div class="zion-native-note">Pașii se deschid în GitHub: autentificare, alegerea contului/organizației și selectarea repository-urilor private. Cheia aplicației rămâne în serviciul Zion.</div>',
     '          </article>',
     '          <article v-if="github.mode !== \'managed\'" class="zion-native-card zion-native-github-settings">',
@@ -101,7 +101,7 @@
     '              <label>Setup URL<input v-model.trim="githubConfig.setup_url" type="url" placeholder="https://raduta.synology.me:5001/releasestation/api/v1/integrations/github/setup"><small>URL public HTTPS configurat și în GitHub App. Trebuie să ajungă la NAS prin reverse proxy/DSM.</small></label>',
     '              <div class="zion-native-actions"><button class="zion-native-button primary" type="submit" :disabled="githubConfigState === \'saving\'">Save App settings</button></div>',
     '            </form>',
-    '            <div class="zion-native-actions"><input class="zion-native-file" type="file" accept=".pem,.key,application/x-pem-file" @change="uploadGithubKey"><button class="zion-native-button primary" type="button" @click="installGithubApp" :disabled="!github.configured">Install / manage in GitHub</button></div>',
+    '            <div class="zion-native-actions"><button class="zion-native-button primary" type="button" @click="openWorkspace">Open workspace ↗</button></div>',
     '            <div class="zion-native-form-message" :class="githubMessageClass" role="status">{{ githubMessage }}</div>',
     '            <div class="zion-native-note"><strong>Pași:</strong> creează GitHub App cu Contents/Metadata Read-only; copiază App ID și slug; configurează Setup URL; încarcă cheia private key `.pem`; salvează; apasă Install și selectează repository-urile private dorite.</div>',
     '          </article>',
@@ -124,8 +124,7 @@
         github: { mode: 'managed', configured: false, connected: false, installations: [], configuration_error: 'Zion Connector is not provisioned for this ReleaseStation instance' },
         githubConfig: { app_id: '', app_slug: '', setup_url: '' },
         githubConfigState: 'loading',
-        githubMessage: '',
-        githubPairingTimer: null
+        githubMessage: ''
       };
     },
     computed: {

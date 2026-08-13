@@ -34,6 +34,7 @@ type Session struct {
 
 type PairingSession struct {
 	ID           string `json:"id"`
+	InstanceID   string `json:"instance_id"`
 	AuthorizeURL string `json:"authorize_url"`
 	PollToken    string `json:"poll_token"`
 	ExpiresIn    int    `json:"expires_in"`

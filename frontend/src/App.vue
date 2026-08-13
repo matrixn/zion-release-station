@@ -333,7 +333,7 @@ async function installGithubApp() {
   githubError.value = '';
   githubMessage.value = '';
   githubConnectState.value = 'starting';
-  const authWindow = window.open('about:blank', '_blank', 'noopener,noreferrer');
+  const authWindow = window.open('about:blank', 'zion-github-authorization');
   try {
     const response = await fetch('/releasestation/api/v1/integrations/github/install', { method: 'POST', headers: { Accept: 'application/json' } });
     const payload = await response.json().catch(() => ({}));

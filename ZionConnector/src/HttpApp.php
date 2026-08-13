@@ -140,15 +140,17 @@ final class HttpApp
             return;
         }
         $state = self::randomToken(32);
+        $sessionId = self::randomToken(18);
         $this->database->createPairingSession(
-            self::randomToken(18),
+            $sessionId,
             $instanceId,
             hash('sha256', $state),
             $completionUrl,
             gmdate('c', time() + 600),
         );
         $this->json(200, [
-            'id' => $instanceId,
+            'id' => $sessionId,
+            'instance_id' => $instanceId,
             'authorize_url' => $this->github->authorizationUrl($state),
             'poll_token' => $state,
             'expires_in' => 600,
