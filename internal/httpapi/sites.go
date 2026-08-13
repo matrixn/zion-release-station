@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -442,6 +443,9 @@ func (s *Server) prepareSiteInput(ctx context.Context, payload sitePayload) (sit
 	}
 	runtime := map[string]any{"permissions": permission}
 	runtime["detection"] = detectionResult
+	if publicIP := resolvePublicIP(hostname); publicIP != "" {
+		runtime["public_ip"] = publicIP
+	}
 	if payload.URL != "" {
 		runtime["url"] = payload.URL
 	}
@@ -481,6 +485,14 @@ func discoveredInput(candidate webstation.DiscoveredSite) sites.Input {
 	if !candidate.Permissions.Readable {
 		status = "permission_required"
 	}
+	runtime := map[string]any{
+		"source":      candidate.Source,
+		"detection":   candidate.Detection,
+		"permissions": candidate.Permissions,
+	}
+	if publicIP := resolvePublicIP(candidate.Hostname); publicIP != "" {
+		runtime["public_ip"] = publicIP
+	}
 	return sites.Input{
 		Name:        candidate.Name,
 		Slug:        normalizeSlug("", candidate.Name, candidate.Hostname),
@@ -490,12 +502,26 @@ func discoveredInput(candidate webstation.DiscoveredSite) sites.Input {
 		Framework:   candidate.Framework,
 		Strategy:    "in_place",
 		Status:      status,
-		Runtime: map[string]any{
-			"source":      candidate.Source,
-			"detection":   candidate.Detection,
-			"permissions": candidate.Permissions,
-		},
+		Runtime:     runtime,
 	}
+}
+
+func resolvePublicIP(hostname string) string {
+	hostname = strings.TrimSpace(hostname)
+	if hostname == "" {
+		return ""
+	}
+	addresses, err := net.LookupIP(hostname)
+	if err != nil {
+		return ""
+	}
+	for _, address := range addresses {
+		if address.IsLoopback() || address.IsPrivate() || address.IsLinkLocalUnicast() || address.IsLinkLocalMulticast() {
+			continue
+		}
+		return address.String()
+	}
+	return ""
 }
 
 func decodeSitePayload(w http.ResponseWriter, r *http.Request) (sitePayload, error) {
