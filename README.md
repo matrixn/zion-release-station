@@ -306,7 +306,7 @@ Milestone 1 (SPK/runtime), Milestone 2 (site-uri și Web Station read-only) și 
 Din tab-ul `Repository` al unui site se poate genera o cheie Ed25519. ReleaseStation păstrează cheia privată criptată în runtime-ul NAS și afișează numai cheia publică. Pentru un repository SSH:
 
 1. generează cheia din `Repository → Generate deploy key`;
-2. adaugă cheia publică în GitHub la `Settings → Deploy keys` cu acces read-only;
+2. deschide repository-ul țintă pe GitHub — nu setările contului — apoi mergi la `repository → Settings → Deploy keys → Add deploy key` și adaugă cheia cu acces read-only; deploy keys sunt configurate per repository, deci repetă pasul pentru fiecare repository;
 3. configurează un host key acceptat în `/var/packages/zion-releasestation/var/git/known_hosts`;
 4. folosește `Test Git connection` pentru validarea repository-ului și branch-ului.
 
