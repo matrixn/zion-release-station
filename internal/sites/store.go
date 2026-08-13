@@ -196,10 +196,27 @@ trap - EXIT
 
 func EffectiveDeployScript(strategy, script string) string {
 	trimmed := strings.TrimSpace(script)
-	if strategy == "atomic" && (trimmed == "" || trimmed == strings.TrimSpace(legacyAtomicDeployScript)) {
+	if strategy == "atomic" && (trimmed == "" || isLegacyAtomicDeployScript(trimmed)) {
 		return DefaultAtomicDeployScript
 	}
 	return trimmed
+}
+
+// isLegacyAtomicDeployScript recognises the generated script used before the
+// document-root layout was corrected. SQLite stores the script as user data,
+// so a harmless whitespace change must not prevent this migration. The
+// distinctive staging move is intentionally required as well, which keeps
+// administrator-authored atomic scripts untouched.
+func isLegacyAtomicDeployScript(script string) bool {
+	normalized := strings.Join(strings.Fields(script), " ")
+	legacy := strings.Join(strings.Fields(legacyAtomicDeployScript), " ")
+	if normalized == legacy {
+		return true
+	}
+	return strings.Contains(normalized, `TARGET_PARENT=$(dirname "$TARGET_DIR")`) &&
+		strings.Contains(normalized, `TARGET_NAME=$(basename "$TARGET_DIR")`) &&
+		strings.Contains(normalized, `mv "$STAGING_DIR" "$TARGET_DIR"`) &&
+		!strings.Contains(normalized, `document-root-staging-`)
 }
 
 func NewStore(db *sql.DB) *Store {
