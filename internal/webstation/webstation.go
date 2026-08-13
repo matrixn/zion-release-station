@@ -79,7 +79,7 @@ func (a *FilesystemAdapter) Discover(ctx context.Context) ([]DiscoveredSite, err
 		}
 		readableRoot = true
 		for _, entry := range entries {
-			if strings.HasPrefix(entry.Name(), ".") {
+			if isReservedEntryName(entry.Name()) {
 				continue
 			}
 			candidate := filepath.Join(root, entry.Name())
@@ -128,4 +128,11 @@ func (a *FilesystemAdapter) Discover(ctx context.Context) ([]DiscoveredSite, err
 	}
 	sort.Slice(discovered, func(i, j int) bool { return discovered[i].Hostname < discovered[j].Hostname })
 	return discovered, nil
+}
+
+// Synology uses marker-prefixed directories for metadata, recycle bins,
+// snapshots and package internals. They are not hosted sites and must never
+// be offered for import.
+func isReservedEntryName(name string) bool {
+	return name == "" || strings.HasPrefix(name, ".") || strings.HasPrefix(name, "@") || strings.HasPrefix(name, "#")
 }

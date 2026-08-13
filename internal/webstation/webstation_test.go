@@ -55,6 +55,23 @@ func TestFilesystemAdapterSkipsSymlinkedDirectories(t *testing.T) {
 	}
 }
 
+func TestFilesystemAdapterSkipsSynologyReservedDirectories(t *testing.T) {
+	root := t.TempDir()
+	for _, name := range []string{"@eaDir", ".shadow", "#recycle"} {
+		if err := os.Mkdir(filepath.Join(root, name), 0o755); err != nil {
+			t.Fatalf("mkdir reserved directory %q: %v", name, err)
+		}
+	}
+	adapter := NewFilesystemAdapter([]string{root}, detection.Registry{})
+	sites, err := adapter.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(sites) != 0 {
+		t.Fatalf("expected reserved directories to be skipped, got %#v", sites)
+	}
+}
+
 func TestFilesystemAdapterSkipsPermissionDeniedRootWhenAnotherRootIsReadable(t *testing.T) {
 	readableRoot := t.TempDir()
 	restrictedRoot := t.TempDir()

@@ -96,6 +96,9 @@ const discoveryPhase = ref('Ready to scan');
 const discoveredSites = ref<DiscoveredSite[]>([]);
 const selectedDiscoveredPaths = ref<string[]>([]);
 const importMessage = ref('');
+const importClosing = ref(false);
+const importCountdown = ref(5);
+const discoveryDialog = ref<HTMLElement | null>(null);
 const webStationState = ref<'checking' | 'available' | 'unavailable'>('checking');
 const wizardOpen = ref(false);
 const wizardStep = ref(1);
@@ -128,6 +131,7 @@ const deployingSiteId = ref('');
 const deployMessage = ref('');
 const deployError = ref('');
 let githubPollTimer: ReturnType<typeof setInterval> | undefined;
+let importCloseTimer: ReturnType<typeof setTimeout> | undefined;
 let githubPairingSessionId = '';
 let githubPairingToken = '';
 let githubPairingHandled = false;
@@ -547,7 +551,39 @@ async function deploySite(site: Site) {
   }
 }
 
+function clearImportCloseTimer() {
+  if (importCloseTimer) {
+    clearTimeout(importCloseTimer);
+    importCloseTimer = undefined;
+  }
+}
+
+function closeDiscovery() {
+  clearImportCloseTimer();
+  importClosing.value = false;
+  importCountdown.value = 5;
+  discoveryOpen.value = false;
+}
+
+function startImportCloseCountdown() {
+  clearImportCloseTimer();
+  importClosing.value = true;
+  importCountdown.value = 5;
+  const tick = () => {
+    importCountdown.value -= 1;
+    if (importCountdown.value <= 0) {
+      importCloseTimer = window.setTimeout(closeDiscovery, 450);
+      return;
+    }
+    importCloseTimer = window.setTimeout(tick, 1000);
+  };
+  importCloseTimer = window.setTimeout(tick, 1000);
+}
+
 async function openDiscovery() {
+  clearImportCloseTimer();
+  importClosing.value = false;
+  importCountdown.value = 5;
   discoveryOpen.value = true;
   discoveryLoading.value = true;
   discoveryError.value = '';
@@ -591,7 +627,11 @@ async function importSelectedSites() {
     await loadSites();
     selectedDiscoveredPaths.value = [];
     discoveredSites.value = discoveredSites.value.map((site) => ({ ...site, already_managed: imported.some((item: Site) => item.project_root === site.project_root) || site.already_managed }));
+    window.requestAnimationFrame(() => discoveryDialog.value?.scrollTo({ top: 0, behavior: 'smooth' }));
+    startImportCloseCountdown();
   } catch {
+    clearImportCloseTimer();
+    importClosing.value = false;
     discoveryError.value = 'Import failed. Check the site permissions and try again.';
   } finally {
     discoveryLoading.value = false;
@@ -609,6 +649,7 @@ onMounted(() => {
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKeydown);
   if (githubPollTimer) clearInterval(githubPollTimer);
+  clearImportCloseTimer();
 });
 </script>
 
@@ -819,15 +860,16 @@ onBeforeUnmount(() => {
     </Transition>
 
     <Transition name="palette-fade">
-      <div v-if="discoveryOpen" class="palette-backdrop" @click.self="discoveryOpen = false">
-        <section class="discovery-dialog" role="dialog" aria-modal="true" aria-labelledby="discovery-title">
+      <div v-if="discoveryOpen" class="palette-backdrop" @click.self="closeDiscovery">
+        <section ref="discoveryDialog" class="discovery-dialog" role="dialog" aria-modal="true" aria-labelledby="discovery-title">
           <header class="discovery-header">
             <div><div class="panel-kicker"><Globe2 :size="13" /> WEB STATION DISCOVERY</div><h2 id="discovery-title">Import hosted applications</h2><p>Read-only scan of configured Web Station roots. Nothing in Web Station is changed.</p></div>
-            <button class="icon-button" type="button" aria-label="Close discovery" @click="discoveryOpen = false"><X :size="17" /></button>
+            <button class="icon-button" type="button" aria-label="Close discovery" @click="closeDiscovery"><X :size="17" /></button>
           </header>
           <div class="discovery-phase"><span class="status-dot" :class="{ 'discovery-pulse': discoveryLoading }" />{{ discoveryPhase }}</div>
           <div v-if="discoveryError" class="discovery-error"><CircleAlert :size="16" />{{ discoveryError }}</div>
-          <div v-if="importMessage" class="discovery-success"><Check :size="16" />{{ importMessage }}</div>
+          <div v-if="importMessage" class="discovery-success" :class="{ 'is-closing': importClosing }"><Check :size="16" />{{ importMessage }}</div>
+          <div v-if="importClosing" class="discovery-close-countdown" role="status" aria-live="polite"><span>Modalul se va închide în</span><strong :key="importCountdown">{{ importCountdown }}</strong><small>Poți continua după actualizarea listei.</small></div>
           <div v-if="!discoveryLoading && discoveredSites.length === 0 && !discoveryError" class="discovery-empty"><Globe2 :size="22" /><strong>No applications discovered</strong><span>Check that Web Station document roots exist under the configured read-only roots.</span></div>
           <div v-else class="discovery-list">
             <label v-for="site in discoveredSites" :key="site.project_root" class="discovery-row" :class="{ managed: site.already_managed }">
