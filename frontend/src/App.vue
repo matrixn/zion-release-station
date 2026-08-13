@@ -103,6 +103,7 @@ const deploymentSearch = ref('');
 const siteDetailLoading = ref(false);
 const deploymentDetailLoading = ref(false);
 const deployingCommitSha = ref('');
+const logsExpanded = ref(true);
 const sites = ref<Site[]>([]);
 const sitesLoading = ref(false);
 const discoveryOpen = ref(false);
@@ -343,6 +344,7 @@ function closeSiteDetail() {
 async function openDeploymentDetails(deployment: Deployment) {
   if (!selectedSite.value) return;
   selectedDeployment.value = deployment;
+  logsExpanded.value = true;
   activeNav.value = 'DeploymentDetail';
   deploymentDetailLoading.value = true;
   try {
@@ -980,10 +982,10 @@ onBeforeUnmount(() => {
         </section>
 
         <section v-if="activeNav === 'DeploymentDetail' && selectedSite && selectedDeployment" class="deployment-detail-view">
-          <div class="deployment-detail-header"><div><button class="text-button" type="button" @click="backToSiteTab('Deployments')">← Back to deployments</button><h1>Deployment details <span>·</span> <code>{{ selectedDeployment.commit_sha ? selectedDeployment.commit_sha.slice(0, 7) : 'unknown' }}</code></h1><div class="deployment-detail-meta"><span class="commit-state" :class="selectedDeployment.status"><Check v-if="selectedDeployment.status === 'deployed'" :size="13" /><CircleX v-else :size="13" /></span><strong>{{ selectedDeployment.status }}</strong><span>{{ selectedDeployment.branch }}</span><span>·</span><span>{{ selectedDeployment.commit_message || 'No commit message' }}</span><span>·</span><span>{{ relativeTime(selectedDeployment.finished_at || selectedDeployment.created_at) }}</span><span>·</span><span>{{ durationLabel(selectedDeployment.duration_ms) }}</span></div></div><div class="hero-actions"><a v-if="sitePublicURL(selectedSite).startsWith('http')" class="button button-secondary" :href="sitePublicURL(selectedSite)" target="_blank" rel="noreferrer"><Globe2 :size="15" />Visit</a><button class="button button-secondary" type="button" @click="backToSiteTab('Deployments')">Collapse / expand all</button></div></div>
+          <div class="deployment-detail-header"><div><button class="text-button" type="button" @click="backToSiteTab('Deployments')">← Back to deployments</button><h1>Deployment details <span>·</span> <code>{{ selectedDeployment.commit_sha ? selectedDeployment.commit_sha.slice(0, 7) : 'unknown' }}</code></h1><div class="deployment-detail-meta"><span class="commit-state" :class="selectedDeployment.status"><Check v-if="selectedDeployment.status === 'deployed'" :size="13" /><CircleX v-else :size="13" /></span><strong>{{ selectedDeployment.status }}</strong><span>{{ selectedDeployment.branch }}</span><span>·</span><span>{{ selectedDeployment.commit_message || 'No commit message' }}</span><span>·</span><span>{{ relativeTime(selectedDeployment.finished_at || selectedDeployment.created_at) }}</span><span>·</span><span>{{ durationLabel(selectedDeployment.duration_ms) }}</span></div></div><div class="hero-actions"><a v-if="sitePublicURL(selectedSite).startsWith('http')" class="button button-secondary" :href="sitePublicURL(selectedSite)" target="_blank" rel="noreferrer"><Globe2 :size="15" />Visit</a><button class="button button-secondary" type="button" @click="logsExpanded = !logsExpanded">{{ logsExpanded ? 'Collapse all' : 'Expand all' }}</button></div></div>
           <div class="detail-facts"><span><strong>Method</strong>{{ selectedDeployment.deployment_method || selectedDeployment.trigger_type || 'manual' }}</span><span><strong>Branch</strong>{{ selectedDeployment.branch || '—' }}</span><span><strong>Commit</strong>{{ selectedDeployment.commit_sha || '—' }}</span><span><strong>Started</strong>{{ selectedDeployment.started_at || '—' }}</span></div>
-          <details open class="log-panel"><summary><span class="commit-state deployed"><Check :size="13" /></span><strong>Build logs</strong><span>{{ durationLabel(selectedDeployment.duration_ms) }}</span></summary><pre>{{ selectedDeployment.build_log || 'No build output was captured.' }}</pre></details>
-          <details open class="log-panel"><summary><span class="commit-state deployed"><Check :size="13" /></span><strong>Deployment logs</strong><span>{{ durationLabel(selectedDeployment.duration_ms) }}</span></summary><pre>{{ selectedDeployment.deployment_log || 'No deployment output was captured.' }}</pre></details>
+          <details :open="logsExpanded" class="log-panel"><summary><span class="commit-state deployed"><Check :size="13" /></span><strong>Build logs</strong><span>{{ durationLabel(selectedDeployment.duration_ms) }}</span></summary><pre>{{ selectedDeployment.build_log || 'No build output was captured.' }}</pre></details>
+          <details :open="logsExpanded" class="log-panel"><summary><span class="commit-state deployed"><Check :size="13" /></span><strong>Deployment logs</strong><span>{{ durationLabel(selectedDeployment.duration_ms) }}</span></summary><pre>{{ selectedDeployment.deployment_log || 'No deployment output was captured.' }}</pre></details>
         </section>
 
         <section v-if="activeNav === 'Settings'" class="settings-view">
