@@ -54,3 +54,31 @@ func TestFilesystemAdapterSkipsSymlinkedDirectories(t *testing.T) {
 		t.Fatalf("expected symlinked site to be skipped, got %#v", sites)
 	}
 }
+
+func TestFilesystemAdapterSkipsPermissionDeniedRootWhenAnotherRootIsReadable(t *testing.T) {
+	readableRoot := t.TempDir()
+	restrictedRoot := t.TempDir()
+	site := filepath.Join(readableRoot, "example.test")
+	if err := os.Mkdir(site, 0o755); err != nil {
+		t.Fatalf("mkdir site: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(site, "wp-config.php"), []byte("<?php"), 0o644); err != nil {
+		t.Fatalf("write marker: %v", err)
+	}
+	if err := os.Chmod(restrictedRoot, 0o000); err != nil {
+		t.Skipf("chmod unavailable: %v", err)
+	}
+	defer os.Chmod(restrictedRoot, 0o755)
+	if _, err := os.ReadDir(restrictedRoot); !os.IsPermission(err) {
+		t.Skip("test process can still read the restricted directory")
+	}
+
+	adapter := NewFilesystemAdapter([]string{restrictedRoot, readableRoot}, detection.Registry{})
+	sites, err := adapter.Discover(context.Background())
+	if err != nil {
+		t.Fatalf("discover: %v", err)
+	}
+	if len(sites) != 1 || sites[0].ProjectRoot != site {
+		t.Fatalf("expected readable root to be discovered, got %#v", sites)
+	}
+}

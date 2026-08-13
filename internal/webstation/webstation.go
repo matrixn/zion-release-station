@@ -55,6 +55,8 @@ func (a *FilesystemAdapter) Available(_ context.Context) (bool, error) {
 func (a *FilesystemAdapter) Discover(ctx context.Context) ([]DiscoveredSite, error) {
 	seen := make(map[string]struct{})
 	var discovered []DiscoveredSite
+	var firstPermissionError error
+	readableRoot := false
 	for _, root := range a.roots {
 		if err := ctx.Err(); err != nil {
 			return nil, err
@@ -63,9 +65,19 @@ func (a *FilesystemAdapter) Discover(ctx context.Context) ([]DiscoveredSite, err
 		if os.IsNotExist(err) {
 			continue
 		}
+		if os.IsPermission(err) {
+			if firstPermissionError == nil {
+				firstPermissionError = err
+			}
+			// Web Station may contain shared folders that are intentionally not
+			// readable by the package user. Continue with the other configured
+			// roots instead of failing the complete read-only discovery.
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("read Web Station root %q: %w", root, err)
 		}
+		readableRoot = true
 		for _, entry := range entries {
 			if strings.HasPrefix(entry.Name(), ".") {
 				continue
@@ -110,6 +122,9 @@ func (a *FilesystemAdapter) Discover(ctx context.Context) ([]DiscoveredSite, err
 				Source:      "filesystem-read-only",
 			})
 		}
+	}
+	if !readableRoot && firstPermissionError != nil {
+		return nil, fmt.Errorf("read Web Station roots: %w", firstPermissionError)
 	}
 	sort.Slice(discovered, func(i, j int) bool { return discovered[i].Hostname < discovered[j].Hostname })
 	return discovered, nil
