@@ -214,6 +214,7 @@ watch(activeNav, (value) => {
 let githubPollTimer: ReturnType<typeof setInterval> | undefined;
 let importCloseTimer: ReturnType<typeof setTimeout> | undefined;
 let dashboardRefreshTimer: ReturnType<typeof setInterval> | undefined;
+let deploymentToastTimer: ReturnType<typeof setTimeout> | undefined;
 let githubPairingSessionId = '';
 let githubPairingToken = '';
 let githubPairingHandled = false;
@@ -563,6 +564,7 @@ async function saveSiteRepository() {
     await loadSites();
     selectedSite.value = sites.value.find((site) => site.id === selectedSite.value?.id) || selectedSite.value;
     resetRepositoryForm(selectedSite.value);
+    await loadSiteHistory();
     repositoryMessage.value = 'Repository-ul și metoda de deployment au fost salvate.';
   } catch (error) {
     repositoryError.value = error instanceof Error ? error.message : 'Nu am putut salva repository-ul.';
@@ -601,6 +603,7 @@ async function loadSiteHistory() {
     const deploymentPayload = await deploymentResponse.json().catch(() => ({}));
     const commitPayload = await commitResponse.json().catch(() => ({}));
     if (!deploymentResponse.ok) throw new Error(deploymentPayload.error?.message || 'Could not load deployments.');
+    if (!commitResponse.ok) throw new Error(commitPayload.error?.message || 'Could not load repository commits.');
     siteDeployments.value = deploymentPayload.data?.items || [];
     siteTotalPages.value = deploymentPayload.data?.total_pages || 1;
     siteCommits.value = commitResponse.ok ? (commitPayload.data || []) : [];
@@ -663,9 +666,11 @@ async function deployCommit(commit: Commit) {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error?.message || 'Deployment failed.');
     deployMessage.value = `${commit.sha.slice(0, 7)} deployed successfully.`;
+    scheduleDeploymentToastDismissal();
     await loadSiteHistory();
   } catch (error) {
     deployError.value = error instanceof Error ? error.message : 'Deployment failed.';
+    scheduleDeploymentToastDismissal();
     await loadSiteHistory();
   } finally {
     deployingCommitSha.value = '';
@@ -937,7 +942,12 @@ async function createManualSite() {
     if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut salva site-ul.');
     await loadSites();
     wizardOpen.value = false;
-    activeNav.value = 'Sites';
+    const created = sites.value.find((site) => site.id === payload.data?.id);
+    if (created) {
+      openSite(created);
+    } else {
+      activeNav.value = 'Sites';
+    }
   } catch (error) {
     wizardError.value = error instanceof Error ? error.message : 'Nu am putut salva site-ul.';
   } finally {
@@ -998,12 +1008,27 @@ async function deploySite(site: Site) {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error?.message || 'Deployment failed.');
     deployMessage.value = `${site.hostname || site.name} deployed atomically.`;
+    scheduleDeploymentToastDismissal();
     await loadSites();
   } catch (error) {
     deployError.value = error instanceof Error ? error.message : 'Deployment failed.';
+    scheduleDeploymentToastDismissal();
   } finally {
     deployingSiteId.value = '';
   }
+}
+
+function dismissDeploymentToast() {
+  deployMessage.value = '';
+  deployError.value = '';
+}
+
+function scheduleDeploymentToastDismissal() {
+  if (deploymentToastTimer) clearTimeout(deploymentToastTimer);
+  deploymentToastTimer = setTimeout(() => {
+    deploymentToastTimer = undefined;
+    dismissDeploymentToast();
+  }, 5000);
 }
 
 function clearImportCloseTimer() {
@@ -1122,6 +1147,7 @@ onBeforeUnmount(() => {
   if (githubPollTimer) clearInterval(githubPollTimer);
   if (dashboardRefreshTimer) clearInterval(dashboardRefreshTimer);
   clearImportCloseTimer();
+  if (deploymentToastTimer) clearTimeout(deploymentToastTimer);
 });
 </script>
 
@@ -1276,7 +1302,9 @@ onBeforeUnmount(() => {
           <button class="site-card add-site-card" type="button" @click="openWizard"><span class="add-site-icon"><Plus :size="19" /></span><strong>Add site manually</strong><span>Configure URL, repository and synchronization</span></button>
         </section>
 
-        <div v-if="deployMessage || deployError" class="deployment-toast" :class="{ error: deployError }"><Check v-if="deployMessage" :size="15" />{{ deployMessage || deployError }}</div>
+        <Transition name="toast">
+          <div v-if="deployMessage || deployError" class="deployment-toast" :class="{ error: deployError }" role="status" aria-live="polite" @click="dismissDeploymentToast"><span class="deployment-toast-icon"><Check v-if="deployMessage" :size="16" /><CircleX v-else :size="16" /></span><span><strong>{{ deployError ? 'Deployment failed' : 'Deployment completed' }}</strong><small>{{ deployMessage || deployError }}</small></span><button type="button" aria-label="Close notification"><X :size="14" /></button></div>
+        </Transition>
 
         <section v-if="activeNav === 'Sites'" class="sites-management">
           <div class="sites-management-header"><div><div class="eyebrow"><span class="eyebrow-pulse" /> SITE CATALOG</div><h1>Managed sites.</h1><p class="hero-copy">Review imported Web Station applications, document roots and deployment readiness.</p></div><div class="hero-actions"><button class="button button-secondary" type="button" @click="loadSites"><RotateCw :size="15" />Refresh</button><button class="button button-secondary" type="button" @click="openDiscovery"><Globe2 :size="15" />Discover Web Station</button><button class="button button-primary" type="button" @click="openWizard"><Plus :size="15" />Add site</button></div></div>
