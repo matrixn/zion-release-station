@@ -100,18 +100,20 @@ func (s *Server) handleGitHubInstall(w http.ResponseWriter, r *http.Request) {
 		}})
 		return
 	}
-	returnURL := s.publicReturnURL(r)
-	session, err := s.githubManaged.StartSession(r.Context(), returnURL)
+	// Pairing is also used for an already-connected instance. It avoids sending
+	// a client-specific return URL through the connector and keeps the browser
+	// flow identical for first connection and repository re-selection.
+	pairing, err := s.githubManaged.StartPairingSession(r.Context(), "")
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "GITHUB_CONNECTOR_UNAVAILABLE", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
-		"mode":       "managed",
-		"session_id": session.ID,
-		"url":        session.AuthorizeURL,
-		"expires_in": session.ExpiresIn,
-		"return_url": returnURL,
+		"mode":       "pairing",
+		"session_id": pairing.ID,
+		"poll_token": pairing.PollToken,
+		"url":        pairing.AuthorizeURL,
+		"expires_in": pairing.ExpiresIn,
 	}})
 }
 

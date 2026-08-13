@@ -86,6 +86,14 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 	}
 
 	id := strings.Trim(relative, "/")
+	if strings.HasSuffix(id, "/repository") {
+		if r.Method == http.MethodGet || r.Method == http.MethodPut || r.Method == http.MethodDelete {
+			s.handleSiteRepository(w, r, strings.TrimSuffix(id, "/repository"))
+			return
+		}
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only GET, PUT and DELETE are supported.")
+		return
+	}
 	if strings.HasSuffix(id, "/deploy") {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only POST is supported.")
@@ -195,6 +203,73 @@ func (s *Server) handleSiteDeploy(w http.ResponseWriter, r *http.Request, id str
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": result})
+}
+
+func (s *Server) handleSiteRepository(w http.ResponseWriter, r *http.Request, siteID string) {
+	if siteID == "" || strings.Contains(siteID, "/") {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Site not found.")
+		return
+	}
+	site, err := s.sites.Get(r.Context(), siteID)
+	if errors.Is(err, sites.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Site not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "SITES_UNAVAILABLE", err.Error())
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		writeJSON(w, http.StatusOK, map[string]any{"data": site.Repository})
+	case http.MethodDelete:
+		if _, err := s.db.ExecContext(r.Context(), `DELETE FROM repositories WHERE site_id = ?`, siteID); err != nil {
+			writeError(w, http.StatusInternalServerError, "REPOSITORY_UNAVAILABLE", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"repository": nil}})
+	case http.MethodPut:
+		var payload struct {
+			Strategy   string `json:"strategy"`
+			Repository *struct {
+				Provider             string `json:"provider"`
+				CloneURL             string `json:"clone_url"`
+				Branch               string `json:"branch"`
+				GitHubInstallationID *int64 `json:"github_installation_id"`
+				GitHubRepositoryID   *int64 `json:"github_repository_id"`
+				GitHubFullName       string `json:"github_full_name"`
+				GitHubDefaultBranch  string `json:"github_default_branch"`
+			} `json:"repository"`
+		}
+		if err := decodeJSON(w, r, &payload); err != nil || payload.Repository == nil {
+			writeError(w, http.StatusBadRequest, "INVALID_REPOSITORY", "Repository details are required.")
+			return
+		}
+		strategy := strings.TrimSpace(payload.Strategy)
+		if strategy == "" {
+			strategy = site.Strategy
+		}
+		if strategy != "atomic" && strategy != "in_place" {
+			writeError(w, http.StatusBadRequest, "INVALID_REPOSITORY", "Deployment strategy must be atomic or in_place.")
+			return
+		}
+		webRoot := site.WebRoot
+		if strategy == "atomic" {
+			webRoot = filepath.Join(site.ProjectRoot, "current")
+		} else if strings.TrimSuffix(filepath.Clean(webRoot), string(filepath.Separator)) == filepath.Join(filepath.Clean(site.ProjectRoot), "current") {
+			webRoot = site.ProjectRoot
+		}
+		updated, err := s.sites.Update(r.Context(), siteID, sites.Input{
+			Name: site.Name, Slug: site.Slug, Hostname: site.Hostname, ProjectRoot: site.ProjectRoot, WebRoot: webRoot,
+			Framework: site.Framework, Strategy: strategy, Status: site.Status, Runtime: site.Runtime,
+			Repository: repositoryInput(payload.Repository),
+		})
+		if err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_REPOSITORY", err.Error())
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": updated})
+	}
 }
 
 func (s *Server) handleSiteDeployments(w http.ResponseWriter, r *http.Request, siteID string) {
@@ -443,6 +518,7 @@ func (s *Server) prepareSiteInput(ctx context.Context, payload sitePayload) (sit
 	}
 	runtime := map[string]any{"permissions": permission}
 	runtime["detection"] = detectionResult
+	runtime["http_server"] = detection.DetectHTTPServer(projectRoot, webRoot)
 	if publicIP := resolvePublicIP(hostname); publicIP != "" {
 		runtime["public_ip"] = publicIP
 	}
@@ -489,6 +565,7 @@ func discoveredInput(candidate webstation.DiscoveredSite) sites.Input {
 		"source":      candidate.Source,
 		"detection":   candidate.Detection,
 		"permissions": candidate.Permissions,
+		"http_server": detection.DetectHTTPServer(candidate.ProjectRoot, candidate.WebRoot),
 	}
 	if publicIP := resolvePublicIP(candidate.Hostname); publicIP != "" {
 		runtime["public_ip"] = publicIP

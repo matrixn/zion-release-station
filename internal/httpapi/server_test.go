@@ -211,12 +211,19 @@ func TestLegacyGitHubAppConfigurationRoutesAreRemoved(t *testing.T) {
 	}
 }
 
-func TestManagedGitHubConnectorStartsSessionAndReportsConnection(t *testing.T) {
+func TestManagedGitHubConnectorStartsPairingAndReportsConnection(t *testing.T) {
 	connector := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if got := r.Header.Get("Authorization"); got != "Bearer connector-test-token" {
+		if r.URL.Path == "/pairing/sessions" {
+			if got := r.Header.Get("Authorization"); got != "" {
+				t.Fatalf("pairing endpoint must not receive an instance credential, got %q", got)
+			}
+		} else if got := r.Header.Get("Authorization"); got != "Bearer connector-test-token" {
 			t.Fatalf("unexpected connector authorization %q", got)
 		}
 		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/pairing/sessions":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"id":"session_123","authorize_url":"https://github.com/apps/zion/installations/new?state=test","poll_token":"pairing-token","expires_in":600}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/instances/test-instance/github/sessions":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"id":"session_123","authorize_url":"https://github.com/apps/zion/installations/new?state=test","expires_in":600}`)
@@ -246,7 +253,7 @@ func TestManagedGitHubConnectorStartsSessionAndReportsConnection(t *testing.T) {
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/releasestation/api/v1/integrations/github/install", nil)
 	server.http.Handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"session_id":"session_123"`) || !strings.Contains(recorder.Body.String(), `"mode":"managed"`) {
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"session_id":"session_123"`) || !strings.Contains(recorder.Body.String(), `"mode":"pairing"`) {
 		t.Fatalf("unexpected managed install response: %d %q", recorder.Code, recorder.Body.String())
 	}
 

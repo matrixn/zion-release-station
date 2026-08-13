@@ -53,7 +53,7 @@ type Site = {
   runtime?: Record<string, any>;
   created_at: string;
   updated_at: string;
-  repository?: { provider: string; clone_url: string; branch: string };
+  repository?: { provider: string; clone_url: string; branch: string; github_installation_id?: number; github_repository_id?: number; github_full_name?: string; github_default_branch?: string };
 };
 type DiscoveredSite = Site & {
   detection: { confidence: string; evidence: string[]; document_root: string };
@@ -88,12 +88,20 @@ type GithubState = {
 };
 
 const healthState = ref<HealthState>('checking');
-const isDark = ref(true);
+const themeStorageKey = 'zion-releasestation-theme';
+function readStoredTheme() {
+  try {
+    return localStorage.getItem(themeStorageKey) === 'light' ? false : true;
+  } catch {
+    return true;
+  }
+}
+const isDark = ref(readStoredTheme());
 const commandOpen = ref(false);
 const commandQuery = ref('');
 const activeNav = ref('Dashboard');
 const selectedSite = ref<Site | null>(null);
-const selectedSiteTab = ref<'Overview' | 'Deployments'>('Overview');
+const selectedSiteTab = ref<'Overview' | 'Repository' | 'Deployments'>('Overview');
 const selectedDeployment = ref<Deployment | null>(null);
 const siteDeployments = ref<Deployment[]>([]);
 const siteCommits = ref<Commit[]>([]);
@@ -138,6 +146,9 @@ const wizardForm = ref({
 });
 const githubState = ref<GithubState>({ configured: false, mode: 'managed', configuration_error: '', connected: false, app_slug: '', setup_url: '', installations: [] });
 const githubRepositories = ref<GithubRepository[]>([]);
+const githubBranches = ref<string[]>([]);
+const githubBranchesLoading = ref(false);
+const githubBranchesError = ref('');
 const githubLoading = ref(false);
 const githubAccount = ref('');
 const githubSaving = ref(false);
@@ -147,8 +158,32 @@ const githubConnectState = ref<'idle' | 'starting' | 'waiting'>('idle');
 const deployingSiteId = ref('');
 const deployMessage = ref('');
 const deployError = ref('');
+const repositorySaving = ref(false);
+const repositoryMessage = ref('');
+const repositoryError = ref('');
+const repositoryForm = ref({
+  provider: 'github',
+  clone_url: '',
+  branch: 'main',
+  github_installation_id: null as number | null,
+  github_repository_id: null as number | null,
+  github_full_name: '',
+  github_default_branch: '',
+  strategy: 'in_place',
+});
+type DashboardMetrics = {
+  successful_deploys: number;
+  total_deploys: number;
+  median_duration_ms: number;
+  running_deploys: number;
+  queue_status: string;
+  latest?: { site_id: string; site_name: string; status: string; branch: string; commit_sha: string; commit_message: string; created_at: string; duration_ms: number };
+  services: { label: string; state: string; detail: string }[];
+};
+const dashboardMetrics = ref<DashboardMetrics>({ successful_deploys: 0, total_deploys: 0, median_duration_ms: 0, running_deploys: 0, queue_status: 'idle', services: [] });
 let githubPollTimer: ReturnType<typeof setInterval> | undefined;
 let importCloseTimer: ReturnType<typeof setTimeout> | undefined;
+let dashboardRefreshTimer: ReturnType<typeof setInterval> | undefined;
 let githubPairingSessionId = '';
 let githubPairingToken = '';
 let githubPairingHandled = false;
@@ -171,6 +206,16 @@ function durationLabel(milliseconds?: number) {
   if (!milliseconds) return '—';
   if (milliseconds < 1000) return `${milliseconds}ms`;
   return `${(milliseconds / 1000).toFixed(1)}s`;
+}
+
+function createdLabel(value?: string) {
+  if (!value) return 'Unknown';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return 'Unknown';
+  const parts = new Intl.DateTimeFormat('ro-RO', { day: 'numeric', month: 'long', year: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false }).formatToParts(date);
+  const part = (type: string) => parts.find((item) => item.type === type)?.value || '';
+  const month = part('month');
+  return `${part('day')} ${month.charAt(0).toUpperCase()}${month.slice(1)} ${part('year')} ${part('hour')}:${part('minute')}`;
 }
 
 function siteRuntime(site: Site | null, key: string, fallback = 'Not detected') {
@@ -201,12 +246,12 @@ const navItems = computed(() => [
   { label: 'Activity', icon: Activity },
 ]);
 
-const systemItems = [
-  { label: 'Web Station', detail: 'Discovery ready', icon: Globe2, state: 'ready' },
-  { label: 'Git transport', detail: 'SSH verification on', icon: GitBranch, state: 'ready' },
-  { label: 'Release worker', detail: 'Idle · queue clear', icon: Zap, state: 'ready' },
-  { label: 'SQLite', detail: 'Foundation migrated', icon: Database, state: 'ready' },
-];
+const systemIcons = [Globe2, GitBranch, Zap, Database];
+const systemItems = computed(() => dashboardMetrics.value.services.map((service, index) => ({ ...service, icon: systemIcons[index] || Activity })));
+
+const featuredSite = computed(() => sites.value.find((site) => site.repository?.provider === 'github') || null);
+const selectableDiscoveredPaths = computed(() => discoveredSites.value.filter((site) => !site.already_managed).map((site) => site.project_root));
+const allDiscoverableSelected = computed(() => selectableDiscoveredPaths.value.length > 0 && selectableDiscoveredPaths.value.every((path) => selectedDiscoveredPaths.value.includes(path)));
 
 const pipelineSteps = [
   { label: 'Checkout', detail: 'main · a9f72cd', duration: '1.1s', status: 'done' },
@@ -242,7 +287,17 @@ const webStationLabel = computed(() => {
 
 function toggleTheme() {
   isDark.value = !isDark.value;
-  document.documentElement.dataset.theme = isDark.value ? 'dark' : 'light';
+  applyTheme();
+}
+
+function applyTheme() {
+  const theme = isDark.value ? 'dark' : 'light';
+  document.documentElement.dataset.theme = theme;
+  try {
+    localStorage.setItem(themeStorageKey, theme);
+  } catch {
+    // Storage can be disabled in a browser privacy mode; the current session still works.
+  }
 }
 
 function openCommandPalette() {
@@ -301,6 +356,109 @@ async function loadSites() {
     sites.value = [];
   } finally {
     sitesLoading.value = false;
+  }
+}
+
+async function loadDashboardMetrics() {
+  try {
+    const response = await fetch('/releasestation/api/v1/system/metrics', { headers: { Accept: 'application/json' } });
+    if (!response.ok) throw new Error('metrics');
+    const payload = await response.json();
+    dashboardMetrics.value = payload.data || dashboardMetrics.value;
+  } catch {
+    // Keep the last known values visible when a single polling request fails.
+  }
+}
+
+function resetRepositoryForm(site: Site) {
+  const repository = site.repository;
+  repositoryForm.value = {
+    provider: repository?.provider || 'github',
+    clone_url: repository?.clone_url || '',
+    branch: repository?.branch || repository?.github_default_branch || 'main',
+    github_installation_id: repository?.github_installation_id || null,
+    github_repository_id: repository?.github_repository_id || null,
+    github_full_name: repository?.github_full_name || '',
+    github_default_branch: repository?.github_default_branch || '',
+    strategy: site.strategy === 'atomic' ? 'atomic' : 'in_place',
+  };
+}
+
+function openRepositoryTab() {
+  if (!selectedSite.value) return;
+  resetRepositoryForm(selectedSite.value);
+  repositoryMessage.value = '';
+  repositoryError.value = '';
+  selectedSiteTab.value = 'Repository';
+  if (githubState.value.connected && !githubRepositories.value.length) loadGithubRepositories();
+  const repository = githubRepositories.value.find((item) => item.full_name === repositoryForm.value.github_full_name);
+  if (repository) loadGithubBranches(repository);
+}
+
+function selectSiteGithubRepository(fullName: string) {
+  const repository = githubRepositories.value.find((item) => item.full_name === fullName);
+  if (!repository) {
+    githubBranches.value = [];
+    githubBranchesError.value = '';
+    return;
+  }
+  repositoryForm.value = {
+    ...repositoryForm.value,
+    provider: 'github',
+    clone_url: repository.clone_url,
+    branch: repository.default_branch,
+    github_installation_id: repository.installation_id,
+    github_repository_id: repository.id,
+    github_full_name: repository.full_name,
+    github_default_branch: repository.default_branch,
+  };
+  loadGithubBranches(repository);
+}
+
+async function saveSiteRepository() {
+  if (!selectedSite.value) return;
+  if (!repositoryForm.value.clone_url.trim() || !repositoryForm.value.branch.trim()) {
+    repositoryError.value = 'Completează URL-ul repository-ului și branch-ul.';
+    return;
+  }
+  repositorySaving.value = true;
+  repositoryMessage.value = '';
+  repositoryError.value = '';
+  try {
+    const response = await fetch(`/releasestation/api/v1/sites/${selectedSite.value.id}/repository`, {
+      method: 'PUT',
+      headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ strategy: repositoryForm.value.strategy, repository: { ...repositoryForm.value } }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut salva repository-ul.');
+    await loadSites();
+    selectedSite.value = sites.value.find((site) => site.id === selectedSite.value?.id) || selectedSite.value;
+    resetRepositoryForm(selectedSite.value);
+    repositoryMessage.value = 'Repository-ul și metoda de deployment au fost salvate.';
+  } catch (error) {
+    repositoryError.value = error instanceof Error ? error.message : 'Nu am putut salva repository-ul.';
+  } finally {
+    repositorySaving.value = false;
+  }
+}
+
+async function disconnectSiteRepository() {
+  if (!selectedSite.value || !window.confirm('Elimini repository-ul asociat acestui site?')) return;
+  repositorySaving.value = true;
+  repositoryMessage.value = '';
+  repositoryError.value = '';
+  try {
+    const response = await fetch(`/releasestation/api/v1/sites/${selectedSite.value.id}/repository`, { method: 'DELETE', headers: { Accept: 'application/json' } });
+    if (!response.ok) throw new Error('Nu am putut elimina repository-ul.');
+    await loadSites();
+    selectedSite.value = sites.value.find((site) => site.id === selectedSite.value?.id) || selectedSite.value;
+    resetRepositoryForm(selectedSite.value);
+    repositoryMessage.value = 'Repository-ul a fost eliminat. Site-ul rămâne în catalog.';
+  } catch (error) {
+    repositoryError.value = error instanceof Error ? error.message : 'Nu am putut elimina repository-ul.';
+  } finally {
+    repositorySaving.value = false;
   }
 }
 
@@ -445,6 +603,10 @@ async function loadGithubRepositories() {
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut citi repository-urile acordate GitHub App.');
     githubRepositories.value = payload.data || [];
+    if (selectedSiteTab.value === 'Repository') {
+      const repository = githubRepositories.value.find((item) => item.full_name === repositoryForm.value.github_full_name);
+      if (repository) loadGithubBranches(repository);
+    }
   } catch (error) {
     githubError.value = error instanceof Error ? error.message : 'Nu am putut citi repository-urile GitHub.';
   } finally {
@@ -459,6 +621,8 @@ function selectGithubRepository(fullName: string) {
     wizardForm.value.githubRepositoryId = null;
     wizardForm.value.githubFullName = '';
     wizardForm.value.githubDefaultBranch = '';
+    githubBranches.value = [];
+    githubBranchesError.value = '';
     return;
   }
   wizardForm.value.provider = 'github';
@@ -468,6 +632,28 @@ function selectGithubRepository(fullName: string) {
   wizardForm.value.githubDefaultBranch = repository.default_branch;
   wizardForm.value.cloneUrl = repository.clone_url;
   wizardForm.value.branch = repository.default_branch;
+  loadGithubBranches(repository);
+}
+
+async function loadGithubBranches(repository: GithubRepository) {
+  githubBranchesLoading.value = true;
+  githubBranchesError.value = '';
+  try {
+    const [owner, name] = repository.full_name.split('/');
+    const response = await fetch(`/releasestation/api/v1/integrations/github/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/branches?installation_id=${repository.installation_id}`, { headers: { Accept: 'application/json' } });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut citi branch-urile repository-ului.');
+    githubBranches.value = Array.isArray(payload.data) ? payload.data : [];
+    if (!githubBranches.value.length) throw new Error('Repository-ul nu are branch-uri disponibile.');
+    if (!githubBranches.value.includes(repository.default_branch)) githubBranches.value.unshift(repository.default_branch);
+    if (!githubBranches.value.includes(wizardForm.value.branch)) wizardForm.value.branch = repository.default_branch;
+    if (repositoryForm.value.github_full_name === repository.full_name && !githubBranches.value.includes(repositoryForm.value.branch)) repositoryForm.value.branch = repository.default_branch;
+  } catch (error) {
+    githubBranches.value = [repository.default_branch];
+    githubBranchesError.value = error instanceof Error ? error.message : 'Nu am putut citi branch-urile repository-ului.';
+  } finally {
+    githubBranchesLoading.value = false;
+  }
 }
 
 function onGithubRepositoryChange(event: Event) {
@@ -706,6 +892,14 @@ function closeDiscovery() {
   discoveryOpen.value = false;
 }
 
+function selectAllDiscovered() {
+  selectedDiscoveredPaths.value = [...selectableDiscoveredPaths.value];
+}
+
+function selectNoneDiscovered() {
+  selectedDiscoveredPaths.value = [];
+}
+
 function startImportCloseCountdown() {
   clearImportCloseTimer();
   importClosing.value = true;
@@ -780,16 +974,25 @@ async function importSelectedSites() {
 }
 
 onMounted(() => {
+  applyTheme();
   document.addEventListener('keydown', onKeydown);
   checkHealth();
   loadSites();
+  loadDashboardMetrics();
   loadWebStationStatus();
   loadGithubStatus();
+  dashboardRefreshTimer = setInterval(() => {
+    checkHealth();
+    loadSites();
+    loadDashboardMetrics();
+    loadWebStationStatus();
+  }, 5000);
 });
 
 onBeforeUnmount(() => {
   document.removeEventListener('keydown', onKeydown);
   if (githubPollTimer) clearInterval(githubPollTimer);
+  if (dashboardRefreshTimer) clearInterval(dashboardRefreshTimer);
   clearImportCloseTimer();
 });
 </script>
@@ -844,7 +1047,7 @@ onBeforeUnmount(() => {
         <div class="breadcrumb"><span>Workspace</span><span class="breadcrumb-slash">/</span><strong>{{ activeNav }}</strong></div>
         <div class="topbar-actions">
           <button class="command-button" type="button" @click="openCommandPalette"><Search :size="16" /><span>Search</span><kbd>⌘ K</kbd></button>
-          <button class="icon-button" type="button" aria-label="Toggle theme" @click="toggleTheme"><Sun v-if="isDark" :size="17" /><Moon v-else :size="17" /></button>
+          <button class="icon-button theme-toggle" type="button" :aria-label="isDark ? 'Switch to light theme' : 'Switch to dark theme'" :title="isDark ? 'Light mode' : 'Dark mode'" @click="toggleTheme"><Sun v-if="isDark" :size="17" /><Moon v-else :size="17" /></button>
           <button class="icon-button" type="button" aria-label="Help"><CircleHelp :size="17" /></button>
           <div class="topbar-avatar">MR</div>
         </div>
@@ -871,45 +1074,46 @@ onBeforeUnmount(() => {
           </article>
           <article class="metric-card">
             <div class="metric-top"><span class="metric-label">Successful deploys</span><span class="metric-icon green"><Check :size="16" /></span></div>
-            <div class="metric-value">98.4<span class="metric-unit">%</span></div>
-            <div class="metric-foot"><span class="trend-positive"><ArrowUpRight :size="14" />2.8%</span><span>Last 30 days</span></div>
+            <div class="metric-value">{{ dashboardMetrics.successful_deploys }} <span class="metric-muted">/ {{ dashboardMetrics.total_deploys }}</span></div>
+            <div class="metric-foot"><span class="status-inline"><span class="status-dot" />Real deployment data</span><span>All time</span></div>
           </article>
           <article class="metric-card">
             <div class="metric-top"><span class="metric-label">Median deploy time</span><span class="metric-icon violet"><Clock3 :size="16" /></span></div>
-            <div class="metric-value">31<span class="metric-unit">.2s</span></div>
-            <div class="metric-foot"><span class="trend-positive"><ArrowDownToLine :size="14" />4.1s faster</span><span>Last 30 days</span></div>
+            <div class="metric-value">{{ dashboardMetrics.median_duration_ms ? (dashboardMetrics.median_duration_ms / 1000).toFixed(1) : '0.0' }}<span class="metric-unit">s</span></div>
+            <div class="metric-foot"><span class="status-inline"><span class="status-dot" />Measured deployments</span><span>All time</span></div>
           </article>
           <article class="metric-card">
             <div class="metric-top"><span class="metric-label">Queue status</span><span class="metric-icon blue"><ListChecks :size="16" /></span></div>
-            <div class="metric-value">Clear</div>
-            <div class="metric-foot"><span class="status-inline"><span class="status-dot" />Worker ready</span><span>2 concurrency</span></div>
+            <div class="metric-value">{{ dashboardMetrics.queue_status === 'running' ? 'Running' : 'Idle' }}</div>
+            <div class="metric-foot"><span class="status-inline"><span class="status-dot" />{{ dashboardMetrics.running_deploys }} active</span><span>Live polling</span></div>
           </article>
         </section>
 
         <section v-if="activeNav === 'Dashboard'" class="dashboard-grid">
           <article class="panel pipeline-panel">
             <div class="panel-heading">
-              <div><div class="panel-kicker"><span class="live-dot" /> LIVE DEPLOYMENT</div><h2>servazar.ro</h2></div>
+              <div><div class="panel-kicker"><span class="live-dot" /> LIVE DEPLOYMENT</div><h2>{{ featuredSite?.hostname || featuredSite?.name || 'No GitHub site configured' }}</h2></div>
               <button class="more-button" type="button"><MoreHorizontal :size="18" /></button>
             </div>
-            <div class="deploy-meta"><span class="branch-chip"><GitBranch :size="14" />main</span><code>a9f72cd</code><span class="meta-separator">·</span><span>just now</span><span class="deploy-state"><span class="status-dot" />Healthy</span></div>
-            <div class="pipeline-track">
-              <div v-for="step in pipelineSteps" :key="step.label" class="pipeline-step">
-                <div class="step-marker"><Check :size="13" /></div>
-                <div class="step-copy"><strong>{{ step.label }}</strong><span>{{ step.detail }}</span></div>
-                <code>{{ step.duration }}</code>
+            <template v-if="dashboardMetrics.latest">
+              <div class="deploy-meta"><span class="branch-chip"><GitBranch :size="14" />{{ dashboardMetrics.latest.branch || 'main' }}</span><code>{{ dashboardMetrics.latest.commit_sha ? dashboardMetrics.latest.commit_sha.slice(0, 7) : 'unknown' }}</code><span class="meta-separator">·</span><span>{{ relativeTime(dashboardMetrics.latest.created_at) }}</span><span class="deploy-state"><span class="status-dot" />{{ dashboardMetrics.latest.status }}</span></div>
+              <div class="pipeline-track">
+                <div class="pipeline-step">
+                  <div class="step-marker"><Check :size="13" /></div>
+                  <div class="step-copy"><strong>{{ dashboardMetrics.latest.commit_message || 'Deployment' }}</strong><span>{{ dashboardMetrics.latest.status }}</span></div>
+                  <code>{{ durationLabel(dashboardMetrics.latest.duration_ms) }}</code>
+                </div>
               </div>
-            </div>
-            <div class="terminal-preview">
-              <div class="terminal-header"><span><span class="terminal-dot red" /><span class="terminal-dot yellow" /><span class="terminal-dot green" /></span><span>release #184 · output</span><button type="button">Open logs <ArrowUpRight :size="13" /></button></div>
-              <div class="terminal-body"><p><span class="terminal-muted">$</span> php artisan optimize</p><p class="terminal-success"><span>✓</span> Configuration cached successfully.</p><p><span class="terminal-muted">$</span> curl -fsS https://servazar.ro/up</p><p class="terminal-success"><span>✓</span> HTTP 200 · deployment active <span class="cursor" /></p></div>
+              <div class="terminal-preview"><div class="terminal-header"><span><span class="terminal-dot red" /><span class="terminal-dot yellow" /><span class="terminal-dot green" /></span><span>latest deployment</span><span>{{ dashboardMetrics.latest.status }}</span></div><div class="terminal-body"><p><span class="terminal-muted">$</span> {{ dashboardMetrics.latest.commit_sha || 'no commit' }}</p><p class="terminal-success"><span>✓</span> {{ dashboardMetrics.latest.commit_message || 'Deployment recorded.' }}</p></div></div>
+            </template>
+            <div v-else class="management-empty dashboard-empty"><UploadCloud :size="22" /><strong>No deployments yet</strong><span>Configure a GitHub repository for a site, then deploy a commit to populate this live panel.</span>
             </div>
           </article>
 
           <article class="panel activity-panel">
             <div class="panel-heading"><div><div class="panel-kicker">SYSTEM OVERVIEW</div><h2>Everything is ready</h2></div><span class="health-badge" :class="healthState"><span class="status-dot" />{{ healthLabel }}</span></div>
             <div class="system-list">
-              <div v-for="item in systemItems" :key="item.label" class="system-row"><span class="system-icon"><component :is="item.icon" :size="15" /></span><span class="system-copy"><strong>{{ item.label }}</strong><small>{{ item.label === 'Web Station' ? webStationLabel : item.detail }}</small></span><Check :size="16" class="system-check" /></div>
+              <div v-for="item in systemItems" :key="item.label" class="system-row"><span class="system-icon"><component :is="item.icon" :size="15" /></span><span class="system-copy"><strong>{{ item.label }}</strong><small>{{ item.detail }}</small></span><Check v-if="item.state === 'ready'" :size="16" class="system-check" /><CircleX v-else :size="16" class="system-error" /></div>
             </div>
             <div class="system-foot"><span>DSM 7.4-90075</span><span class="system-foot-separator">·</span><span>x86_64 / apollolake</span><button type="button" @click="checkHealth"><RotateCw :size="14" />Refresh</button></div>
           </article>
@@ -966,13 +1170,26 @@ onBeforeUnmount(() => {
 
         <section v-if="activeNav === 'SiteDetail' && selectedSite" class="site-detail-view">
           <div class="site-detail-header"><div><button class="text-button" type="button" @click="closeSiteDetail">← All sites</button><div class="eyebrow"><span class="eyebrow-pulse" /> SITE WORKSPACE</div><h1>{{ selectedSite.hostname || selectedSite.name }}.</h1><p class="hero-copy">{{ frameworkLabel(selectedSite.framework) }} · {{ selectedSite.project_root }}</p></div><div class="hero-actions"><a v-if="sitePublicURL(selectedSite).startsWith('http')" class="button button-secondary" :href="sitePublicURL(selectedSite)" target="_blank" rel="noreferrer"><Globe2 :size="15" />Visit</a><button class="button button-primary" type="button" :disabled="!selectedSite.repository || selectedSite.strategy !== 'atomic'" @click="deploySite(selectedSite)"><Play :size="15" />Deploy</button></div></div>
-          <div class="site-tabs"><button type="button" :class="{ active: selectedSiteTab === 'Overview' }" @click="selectedSiteTab = 'Overview'">Overview</button><button type="button" :class="{ active: selectedSiteTab === 'Deployments' }" @click="selectedSiteTab = 'Deployments'">Deployments <span>{{ siteDeployments.length }}</span></button></div>
+          <div class="site-tabs"><button type="button" :class="{ active: selectedSiteTab === 'Overview' }" @click="selectedSiteTab = 'Overview'">Overview</button><button type="button" :class="{ active: selectedSiteTab === 'Repository' }" @click="openRepositoryTab">Repository</button><button type="button" :class="{ active: selectedSiteTab === 'Deployments' }" @click="selectedSiteTab = 'Deployments'">Deployments <span>{{ siteDeployments.length }}</span></button></div>
           <template v-if="selectedSiteTab === 'Overview'">
-            <div class="site-meta-grid"><article class="panel site-meta-card"><span>Framework</span><strong>{{ frameworkLabel(selectedSite.framework) }}</strong></article><article class="panel site-meta-card"><span>PHP</span><strong>{{ siteRuntime(selectedSite, 'php_version', '8.5') }}</strong></article><article class="panel site-meta-card"><span>HTTP server</span><strong>{{ siteRuntime(selectedSite, 'http_server', 'Detected by Web Station') }}</strong></article><article class="panel site-meta-card"><span>Public IP</span><button type="button" @click="copyPublicIP(selectedSite)">{{ siteRuntime(selectedSite, 'public_ip', 'Not detected') }}</button></article><article class="panel site-meta-card"><span>Public Web</span><a :href="sitePublicURL(selectedSite)" target="_blank" rel="noreferrer">{{ sitePublicURL(selectedSite) }}</a></article><article class="panel site-meta-card"><span>Created</span><strong>{{ new Date(selectedSite.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) }}</strong></article></div>
+            <div class="site-meta-grid"><article class="panel site-meta-card"><span>Framework</span><strong>{{ frameworkLabel(selectedSite.framework) }}</strong></article><article class="panel site-meta-card"><span>PHP</span><strong>{{ siteRuntime(selectedSite, 'php_version', '8.5') }}</strong></article><article class="panel site-meta-card"><span>HTTP server</span><strong>{{ siteRuntime(selectedSite, 'http_server', 'Unknown') }}</strong></article><article class="panel site-meta-card"><span>Public IP</span><button type="button" @click="copyPublicIP(selectedSite)">{{ siteRuntime(selectedSite, 'public_ip', 'Not detected') }}</button></article><article class="panel site-meta-card"><span>Public Web</span><a :href="sitePublicURL(selectedSite)" target="_blank" rel="noreferrer">{{ sitePublicURL(selectedSite) }}</a></article><article class="panel site-meta-card"><span>Created</span><strong>{{ createdLabel(selectedSite.created_at) }}</strong></article></div>
             <div class="detail-section-heading"><div><div class="panel-kicker">SOURCE HISTORY</div><h2>Commits</h2></div><span class="muted-copy">{{ selectedSite.repository?.branch || 'main' }}</span></div>
             <div v-if="siteDetailLoading" class="detail-loading"><RotateCw :size="16" class="spin" /> Loading repository history…</div>
             <div v-else-if="siteCommits.length" class="commit-table"><div v-for="commit in siteCommits" :key="commit.sha" class="commit-row" :class="commit.status"><span class="commit-state" :class="commit.status" v-if="commit.deployed"><Check :size="13" /></span><span class="commit-state failed" v-else-if="commit.status === 'failed'"><CircleX :size="13" /></span><span class="commit-state pending" v-else><CircleDot :size="13" /></span><code>{{ commit.sha.slice(0, 7) }}</code><span class="commit-message"><strong>{{ commit.message.split('\n')[0] }}</strong><small>{{ commit.author || 'GitHub' }} · {{ relativeTime(commit.created_at) }}</small></span><span class="commit-status">{{ commit.deployed ? 'Deployed' : (commit.status === 'failed' ? 'Failed' : 'Not deployed') }}</span><button class="button button-secondary commit-deploy" type="button" :disabled="deployingCommitSha !== '' || commit.deployed || selectedSite.strategy !== 'atomic'" @click="deployCommit(commit)"><RotateCw v-if="deployingCommitSha === commit.sha" :size="13" class="spin" /><span v-else>Deploy</span></button></div></div>
             <div v-else class="management-empty"><GitBranch :size="22" /><strong>No commits available</strong><span>Connect GitHub and configure a repository for this site to see commit history.</span></div>
+          </template>
+          <template v-else-if="selectedSiteTab === 'Repository'">
+            <div class="detail-section-heading"><div><div class="panel-kicker">SOURCE CONFIGURATION</div><h2>Repository</h2></div><span class="connection-badge" :class="{ connected: !!selectedSite.repository }"><span class="status-dot" />{{ selectedSite.repository ? 'Configured' : 'Not configured' }}</span></div>
+            <div class="repository-editor panel">
+              <div class="wizard-intro"><GitBranch :size="20" /><div><strong>Asociază sursa site-ului</strong><span>Alege un repository din GitHub Connector sau editează URL-ul și branch-ul manual. Această configurație este folosită la citirea commit-urilor și la deploy.</span></div></div>
+              <div class="form-grid"><label><span>Provider</span><select v-model="repositoryForm.provider"><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="bitbucket">Bitbucket</option><option value="generic">Other Git server</option></select></label><label><span>Branch</span><select v-if="repositoryForm.provider === 'github'" v-model="repositoryForm.branch" :disabled="!repositoryForm.github_full_name || githubBranchesLoading"><option v-if="!repositoryForm.github_full_name" value="">Select repository first</option><option v-else-if="githubBranchesLoading" value="">Loading branches…</option><option v-for="branch in githubBranches" :key="branch" :value="branch">{{ branch }}</option></select><input v-else v-model="repositoryForm.branch" type="text" placeholder="main" /></label></div>
+              <label><span>Repository from connected GitHub</span><select :value="repositoryForm.github_full_name" @change="selectSiteGithubRepository(($event.target as HTMLSelectElement).value)"><option value="">Select a repository or use the URL below</option><option v-for="repository in githubRepositories" :key="`${repository.installation_id}:${repository.id}`" :value="repository.full_name">{{ repository.full_name }}{{ repository.private ? ' · private' : '' }} · {{ repository.account_login }}</option></select><small v-if="githubLoading">Loading repositories…</small><small v-else-if="!githubState.connected">GitHub nu este conectat. Îl poți conecta din Settings.</small></label>
+              <label><span>Repository clone URL</span><input v-model="repositoryForm.clone_url" type="text" placeholder="https://github.com/owner/project.git" /><small>Repository-ul poate fi public sau privat. Pentru private, accesul trebuie acordat în instalarea GitHub Connector.</small></label><div v-if="githubBranchesError" class="wizard-hint warning"><CircleAlert :size="15" /><span>{{ githubBranchesError }}</span></div>
+              <div class="strategy-grid"><label class="strategy-card" :class="{ selected: repositoryForm.strategy === 'in_place' }"><input v-model="repositoryForm.strategy" type="radio" value="in_place" /><span class="strategy-title">In-place <em>direct</em></span><span>Sincronizează direct rădăcina Web Station existentă. Este potrivit când site-ul are date și fișiere locale care trebuie păstrate.</span></label><label class="strategy-card" :class="{ selected: repositoryForm.strategy === 'atomic' }"><input v-model="repositoryForm.strategy" type="radio" value="atomic" /><span class="strategy-title">Atomic releases <em>safer rollback</em></span><span>Construiește release-uri separate și schimbă directorul activ numai după finalizarea deploy-ului.</span></label></div>
+              <div class="wizard-hint"><CircleHelp :size="15" /><span>La trecerea pe Atomic, WebRoot-ul site-ului este setat automat la <code>{{ selectedSite.project_root }}/current</code>. La In-place revine la project root.</span></div>
+              <div v-if="repositoryError" class="discovery-error"><CircleAlert :size="16" />{{ repositoryError }}</div><div v-if="repositoryMessage" class="discovery-success"><Check :size="16" />{{ repositoryMessage }}</div>
+              <div class="settings-actions"><button class="button button-secondary" type="button" :disabled="repositorySaving || !selectedSite.repository" @click="disconnectSiteRepository">Remove repository</button><span /><button class="button button-primary" type="button" :disabled="repositorySaving" @click="saveSiteRepository">{{ repositorySaving ? 'Saving…' : 'Save repository' }} <Check :size="14" /></button></div>
+            </div>
           </template>
           <template v-else>
             <div class="deployments-toolbar"><div><div class="panel-kicker">DEPLOYMENT HISTORY</div><h2>Deployments</h2></div><input v-model="deploymentSearch" type="search" placeholder="Search commit name…" @change="sitePage = 1; loadSiteHistory()" /></div>
@@ -1043,7 +1260,7 @@ onBeforeUnmount(() => {
               <span class="discovery-badge" :class="site.permissions.status">{{ site.already_managed ? 'Managed' : site.permissions.status }}</span>
             </label>
           </div>
-          <footer class="discovery-footer"><span>{{ selectedDiscoveredPaths.length }} selected</span><div><button class="button button-secondary" type="button" @click="openDiscovery">Rescan</button><button class="button button-primary" type="button" :disabled="discoveryLoading || !selectedDiscoveredPaths.length" @click="importSelectedSites">Import selected</button></div></footer>
+          <footer class="discovery-footer"><div class="discovery-selection"><span>{{ selectedDiscoveredPaths.length }} / {{ selectableDiscoveredPaths.length }} selected</span><button class="button button-secondary" type="button" :disabled="!selectableDiscoveredPaths.length || allDiscoverableSelected" @click="selectAllDiscovered">Select all</button><button class="button button-secondary" type="button" :disabled="!selectedDiscoveredPaths.length" @click="selectNoneDiscovered">Select none</button></div><div><button class="button button-secondary" type="button" @click="openDiscovery">Rescan</button><button class="button button-primary" type="button" :disabled="discoveryLoading || !selectedDiscoveredPaths.length" @click="importSelectedSites">Import selected</button></div></footer>
         </section>
       </div>
     </Transition>
@@ -1067,10 +1284,10 @@ onBeforeUnmount(() => {
 
           <div v-else-if="wizardStep === 2" class="wizard-body">
             <div class="wizard-intro"><GitBranch :size="20" /><div><strong>Ce repository va alimenta site-ul?</strong><span>Alege un repository acordat GitHub App sau introdu manual un URL. Repository-urile private apar aici numai după instalarea App-ului cu acces selectat.</span></div></div>
-            <div class="form-grid"><label><span>Provider</span><select v-model="wizardForm.provider"><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="bitbucket">Bitbucket</option><option value="generic">Other Git server</option></select></label><label><span>Branch</span><input v-model="wizardForm.branch" type="text" placeholder="main" /></label></div>
+            <div class="form-grid"><label><span>Provider</span><select v-model="wizardForm.provider"><option value="github">GitHub</option><option value="gitlab">GitLab</option><option value="bitbucket">Bitbucket</option><option value="generic">Other Git server</option></select></label><label><span>Branch</span><select v-if="wizardForm.provider === 'github'" v-model="wizardForm.branch" :disabled="!wizardForm.githubFullName || githubBranchesLoading"><option v-if="!wizardForm.githubFullName" value="">Select repository first</option><option v-else-if="githubBranchesLoading" value="">Loading branches…</option><option v-for="branch in githubBranches" :key="branch" :value="branch">{{ branch }}</option></select><input v-else v-model="wizardForm.branch" type="text" placeholder="main" /></label></div>
             <label v-if="wizardForm.provider === 'github'"><span>Repository from GitHub App</span><select :value="wizardForm.githubFullName" @change="onGithubRepositoryChange"><option value="">Select a granted repository or enter URL below</option><option v-for="repository in githubRepositories" :key="`${repository.installation_id}:${repository.id}`" :value="repository.full_name">{{ repository.full_name }}{{ repository.private ? ' · private' : '' }} · {{ repository.account_login }}</option></select><small v-if="githubLoading">Loading repositories…</small><small v-else-if="githubState.connected && !githubRepositories.length">No granted repositories found. Refresh GitHub App access.</small></label>
             <label><span>Repository clone URL</span><input v-model="wizardForm.cloneUrl" type="text" placeholder="https://github.com/matrixn/my-site.git" /></label>
-            <div v-if="githubState.connected" class="wizard-hint"><Check :size="15" /><span>GitHub App este conectată. Repository-urile private din listă sunt cele aprobate explicit în GitHub.</span></div><div v-else class="wizard-hint warning"><CircleAlert :size="15" /><span>GitHub App nu este conectată. Poți continua cu un URL public/manual sau poți instala App-ul din Settings.</span></div>
+            <div v-if="githubBranchesError" class="wizard-hint warning"><CircleAlert :size="15" /><span>{{ githubBranchesError }}</span></div><div v-if="githubState.connected" class="wizard-hint"><Check :size="15" /><span>GitHub App este conectată. Repository-urile private din listă sunt cele aprobate explicit în GitHub.</span></div><div v-else class="wizard-hint warning"><CircleAlert :size="15" /><span>GitHub App nu este conectată. Poți continua cu un URL public/manual sau poți instala App-ul din Settings.</span></div>
           </div>
 
           <div v-else-if="wizardStep === 3" class="wizard-body">

@@ -50,10 +50,12 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 	mux.HandleFunc("/releasestation/api/v1/system/health", server.handleHealth)
 	mux.HandleFunc("/releasestation/api/v1/system/info", server.handleInfo)
 	mux.HandleFunc("/releasestation/api/v1/system/capabilities", server.handleCapabilities)
+	mux.HandleFunc("/releasestation/api/v1/system/metrics", server.handleMetrics)
 	mux.HandleFunc("/releasestation/api/v1/settings/web-access", server.handleWebAccess)
 	mux.HandleFunc("/api/v1/system/health", server.handleHealth)
 	mux.HandleFunc("/api/v1/system/info", server.handleInfo)
 	mux.HandleFunc("/api/v1/system/capabilities", server.handleCapabilities)
+	mux.HandleFunc("/api/v1/system/metrics", server.handleMetrics)
 	mux.HandleFunc("/api/v1/settings/web-access", server.handleWebAccess)
 	server.registerSiteRoutes(mux, "/releasestation/api/v1")
 	server.registerSiteRoutes(mux, "/api/v1")
@@ -134,6 +136,19 @@ func (s *Server) handleInfo(w http.ResponseWriter, r *http.Request) {
 		"version":      s.config.Version,
 		"bind_address": s.config.BindAddress,
 	}})
+}
+
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only GET is supported.")
+		return
+	}
+	metrics, err := s.dashboardMetrics(r.Context())
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "METRICS_UNAVAILABLE", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": metrics})
 }
 
 func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
