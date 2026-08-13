@@ -66,6 +66,15 @@ type Repository struct {
 	SSHURL         string `json:"ssh_url"`
 }
 
+type Commit struct {
+	SHA       string `json:"sha"`
+	Message   string `json:"message"`
+	Branch    string `json:"branch"`
+	Author    string `json:"author,omitempty"`
+	URL       string `json:"url,omitempty"`
+	CreatedAt string `json:"created_at,omitempty"`
+}
+
 type Status struct {
 	State         string         `json:"state"`
 	AccountLogin  string         `json:"account_login,omitempty"`
@@ -227,6 +236,42 @@ func (c *Client) Branches(ctx context.Context, installationID int64, fullName st
 		return nil, fmt.Errorf("read managed GitHub branches: %w", err)
 	}
 	return response.Branches, nil
+}
+
+func (c *Client) Commits(ctx context.Context, installationID int64, fullName, branch string, perPage int) ([]Commit, error) {
+	parts := strings.Split(strings.Trim(fullName, "/"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return nil, fmt.Errorf("invalid GitHub repository name")
+	}
+	if perPage < 1 || perPage > 100 {
+		perPage = 30
+	}
+	query := url.Values{}
+	query.Set("installation_id", fmt.Sprintf("%d", installationID))
+	query.Set("branch", strings.TrimSpace(branch))
+	query.Set("per_page", fmt.Sprintf("%d", perPage))
+	var response []Commit
+	endpoint := c.path("github/repositories/"+url.PathEscape(parts[0])+"/"+url.PathEscape(parts[1])+"/commits") + "?" + query.Encode()
+	if err := c.request(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
+		return nil, fmt.Errorf("read managed GitHub commits: %w", err)
+	}
+	return response, nil
+}
+
+func (c *Client) ResolveCommit(ctx context.Context, installationID int64, fullName, ref string) (Commit, error) {
+	parts := strings.Split(strings.Trim(fullName, "/"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" || strings.TrimSpace(ref) == "" {
+		return Commit{}, fmt.Errorf("invalid GitHub commit request")
+	}
+	query := url.Values{}
+	query.Set("installation_id", fmt.Sprintf("%d", installationID))
+	query.Set("ref", strings.TrimSpace(ref))
+	var response Commit
+	endpoint := c.path("github/repositories/"+url.PathEscape(parts[0])+"/"+url.PathEscape(parts[1])+"/commit") + "?" + query.Encode()
+	if err := c.request(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
+		return Commit{}, fmt.Errorf("resolve managed GitHub commit: %w", err)
+	}
+	return response, nil
 }
 
 func (c *Client) DownloadArchive(ctx context.Context, installationID int64, fullName, ref string, target io.Writer) error {

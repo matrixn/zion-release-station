@@ -17,7 +17,7 @@ func TestOpenAppliesFoundationMigration(t *testing.T) {
 	if err := db.QueryRow(`SELECT count(*) FROM schema_migrations`).Scan(&migrationCount); err != nil {
 		t.Fatalf("read migration count: %v", err)
 	}
-	if migrationCount != 3 {
+	if migrationCount != 4 {
 		t.Fatalf("unexpected migration count %d", migrationCount)
 	}
 

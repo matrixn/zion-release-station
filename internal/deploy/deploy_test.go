@@ -55,7 +55,7 @@ func TestDeployGitHubExtractsAndSwitchesCurrentAtomically(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deploy: %v", err)
 	}
-	if result.Status != "completed" {
+	if result.Status != "deployed" {
 		t.Fatalf("unexpected result: %#v", result)
 	}
 	current, err := filepath.EvalSymlinks(filepath.Join(root, "current"))
@@ -68,6 +68,13 @@ func TestDeployGitHubExtractsAndSwitchesCurrentAtomically(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(root, ".zion", "releases", result.ReleaseID)); err != nil {
 		t.Fatalf("release was not retained: %v", err)
+	}
+	deployment, err := runner.GetDeployment(context.Background(), site.ID, result.DeploymentID)
+	if err != nil {
+		t.Fatalf("read deployment history: %v", err)
+	}
+	if deployment.Status != "deployed" || deployment.DeploymentMethod != "manual" || deployment.BuildLog == "" || deployment.DeploymentLog == "" {
+		t.Fatalf("unexpected deployment history: %#v", deployment)
 	}
 }
 

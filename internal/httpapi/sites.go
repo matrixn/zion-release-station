@@ -2,6 +2,7 @@ package httpapi
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 
 	"github.com/matrixn/zion-release-station/internal/detection"
@@ -91,6 +93,29 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 		s.handleSiteDeploy(w, r, strings.TrimSuffix(id, "/deploy"))
 		return
 	}
+	if strings.HasSuffix(id, "/deployments") || strings.Contains(id, "/deployments/") {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only GET is supported.")
+			return
+		}
+		parts := strings.Split(strings.TrimSuffix(strings.TrimPrefix(id, "/"), "/"), "/")
+		if len(parts) == 2 && parts[1] == "deployments" {
+			s.handleSiteDeployments(w, r, parts[0])
+			return
+		}
+		if len(parts) == 3 && parts[1] == "deployments" && parts[2] != "" {
+			s.handleDeploymentDetails(w, r, parts[0], parts[2])
+			return
+		}
+	}
+	if strings.HasSuffix(id, "/commits") {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only GET is supported.")
+			return
+		}
+		s.handleSiteCommits(w, r, strings.TrimSuffix(id, "/commits"))
+		return
+	}
 	if strings.Contains(id, "/") || id == "" {
 		writeError(w, http.StatusNotFound, "NOT_FOUND", "Site not found.")
 		return
@@ -157,12 +182,95 @@ func (s *Server) handleSiteDeploy(w http.ResponseWriter, r *http.Request, id str
 		writeError(w, http.StatusInternalServerError, "SITES_UNAVAILABLE", err.Error())
 		return
 	}
-	result, err := s.deployer.DeployGitHub(r.Context(), site)
+	var payload struct {
+		Ref string `json:"ref"`
+	}
+	if r.Body != nil {
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&payload)
+	}
+	result, err := s.deployer.DeployGitHubRef(r.Context(), site, strings.TrimSpace(payload.Ref))
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "DEPLOYMENT_FAILED", err.Error())
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"data": result})
+}
+
+func (s *Server) handleSiteDeployments(w http.ResponseWriter, r *http.Request, siteID string) {
+	if siteID == "" || strings.Contains(siteID, "/") {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Site not found.")
+		return
+	}
+	if _, err := s.sites.Get(r.Context(), siteID); errors.Is(err, sites.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Site not found.")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "SITES_UNAVAILABLE", err.Error())
+		return
+	}
+	page, _ := strconv.Atoi(r.URL.Query().Get("page"))
+	perPage, _ := strconv.Atoi(r.URL.Query().Get("per_page"))
+	result, err := s.deployer.ListDeployments(r.Context(), siteID, strings.TrimSpace(r.URL.Query().Get("q")), page, perPage)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DEPLOYMENTS_UNAVAILABLE", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": result})
+}
+
+func (s *Server) handleDeploymentDetails(w http.ResponseWriter, r *http.Request, siteID, deploymentID string) {
+	item, err := s.deployer.GetDeployment(r.Context(), siteID, deploymentID)
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Deployment not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DEPLOYMENTS_UNAVAILABLE", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": item})
+}
+
+func (s *Server) handleSiteCommits(w http.ResponseWriter, r *http.Request, siteID string) {
+	site, err := s.sites.Get(r.Context(), siteID)
+	if errors.Is(err, sites.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Site not found.")
+		return
+	}
+	if err != nil || site.Repository == nil || site.Repository.GitHubInstallationID == nil || site.Repository.GitHubFullName == "" {
+		writeError(w, http.StatusBadRequest, "REPOSITORY_UNAVAILABLE", "The site does not have a connected GitHub repository.")
+		return
+	}
+	if !s.githubManaged.Configured() {
+		writeError(w, http.StatusServiceUnavailable, "GITHUB_CONNECTOR_UNAVAILABLE", s.githubManaged.ConfigurationError())
+		return
+	}
+	branch := site.Repository.Branch
+	if branch == "" {
+		branch = site.Repository.GitHubDefaultBranch
+	}
+	commits, err := s.githubManaged.Commits(r.Context(), *site.Repository.GitHubInstallationID, site.Repository.GitHubFullName, branch, 50)
+	if err != nil {
+		writeError(w, http.StatusBadGateway, "GITHUB_CONNECTOR_UNAVAILABLE", err.Error())
+		return
+	}
+	statuses, err := s.deployer.CommitStatuses(r.Context(), siteID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "DEPLOYMENTS_UNAVAILABLE", err.Error())
+		return
+	}
+	items := make([]map[string]any, 0, len(commits))
+	for _, commit := range commits {
+		deployment, ok := statuses[commit.SHA]
+		status := "not_deployed"
+		deploymentID := ""
+		if ok {
+			status = deployment.Status
+			deploymentID = deployment.DeploymentID
+		}
+		items = append(items, map[string]any{"sha": commit.SHA, "message": commit.Message, "branch": commit.Branch, "author": commit.Author, "url": commit.URL, "created_at": commit.CreatedAt, "deployed": status == "deployed", "deployment_id": deploymentID, "status": status})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": items, "branch": branch})
 }
 
 func (s *Server) handleWebStationStatus(w http.ResponseWriter, r *http.Request) {

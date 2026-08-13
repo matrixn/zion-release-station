@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/matrixn/zion-release-station/internal/githubconnector"
 	"github.com/matrixn/zion-release-station/internal/sites"
 )
 
@@ -24,9 +25,14 @@ type ArchiveDownloader interface {
 	DownloadArchive(ctx context.Context, installationID int64, fullName, ref string, target io.Writer) error
 }
 
+type CommitResolver interface {
+	ResolveCommit(ctx context.Context, installationID int64, fullName, ref string) (githubconnector.Commit, error)
+}
+
 type Runner struct {
-	db     *sql.DB
-	github ArchiveDownloader
+	db       *sql.DB
+	github   ArchiveDownloader
+	resolver CommitResolver
 }
 
 type Result struct {
@@ -37,11 +43,60 @@ type Result struct {
 	Status       string `json:"status"`
 }
 
+type Deployment struct {
+	ID               string `json:"id"`
+	SiteID           string `json:"site_id"`
+	TriggerType      string `json:"trigger_type"`
+	Branch           string `json:"branch,omitempty"`
+	CommitSHA        string `json:"commit_sha,omitempty"`
+	CommitMessage    string `json:"commit_message,omitempty"`
+	CommitURL        string `json:"commit_url,omitempty"`
+	DeploymentMethod string `json:"deployment_method"`
+	Status           string `json:"status"`
+	ErrorCode        string `json:"error_code,omitempty"`
+	ErrorSummary     string `json:"error_summary,omitempty"`
+	QueuedAt         string `json:"queued_at"`
+	StartedAt        string `json:"started_at,omitempty"`
+	FinishedAt       string `json:"finished_at,omitempty"`
+	DurationMS       int64  `json:"duration_ms,omitempty"`
+	CreatedAt        string `json:"created_at"`
+	BuildLog         string `json:"build_log,omitempty"`
+	DeploymentLog    string `json:"deployment_log,omitempty"`
+}
+
+type Commit struct {
+	SHA          string `json:"sha"`
+	Message      string `json:"message"`
+	Branch       string `json:"branch"`
+	Author       string `json:"author,omitempty"`
+	URL          string `json:"url,omitempty"`
+	CreatedAt    string `json:"created_at,omitempty"`
+	Deployed     bool   `json:"deployed"`
+	DeploymentID string `json:"deployment_id,omitempty"`
+	Status       string `json:"status"`
+}
+
+type Page struct {
+	Items      []Deployment `json:"items"`
+	Page       int          `json:"page"`
+	PerPage    int          `json:"per_page"`
+	Total      int          `json:"total"`
+	TotalPages int          `json:"total_pages"`
+}
+
 func NewRunner(db *sql.DB, github ArchiveDownloader) *Runner {
-	return &Runner{db: db, github: github}
+	runner := &Runner{db: db, github: github}
+	if resolver, ok := github.(CommitResolver); ok {
+		runner.resolver = resolver
+	}
+	return runner
 }
 
 func (r *Runner) DeployGitHub(ctx context.Context, site sites.Site) (Result, error) {
+	return r.DeployGitHubRef(ctx, site, "")
+}
+
+func (r *Runner) DeployGitHubRef(ctx context.Context, site sites.Site, ref string) (result Result, err error) {
 	if site.Strategy != "atomic" {
 		return Result{}, fmt.Errorf("site %q is not configured for atomic deployment", site.ID)
 	}
@@ -84,13 +139,36 @@ func (r *Runner) DeployGitHub(ctx context.Context, site sites.Site) (Result, err
 	if branch == "" {
 		return Result{}, fmt.Errorf("site %q has no GitHub branch configured", site.ID)
 	}
-	if err := r.createDeployment(ctx, deploymentID, site.ID, branch); err != nil {
+	archiveRef := branch
+	if strings.TrimSpace(ref) != "" {
+		archiveRef = strings.TrimSpace(ref)
+	}
+	var commit githubconnector.Commit
+	if r.resolver != nil {
+		commit, err = r.resolver.ResolveCommit(ctx, *site.Repository.GitHubInstallationID, site.Repository.GitHubFullName, archiveRef)
+		if err != nil {
+			return Result{}, err
+		}
+	}
+	logs := newDeploymentLogs()
+	logs.add("build", "Preparing deployment for "+site.Name)
+	logs.add("build", "Resolving commit "+archiveRef)
+	if commit.SHA != "" {
+		logs.add("build", "Resolved "+commit.SHA+" — "+strings.Split(commit.Message, "\n")[0])
+	}
+	if err := r.createDeployment(ctx, deploymentID, site.ID, branch, commit); err != nil {
 		return Result{}, err
 	}
 	failed := true
 	defer func() {
+		if err != nil {
+			logs.add("deployment", "ERROR: "+err.Error())
+		}
+		_ = r.saveDeploymentLogs(context.Background(), deploymentID, logs)
 		if failed {
 			_ = r.finishDeployment(context.Background(), deploymentID, "failed", "DEPLOYMENT_FAILED")
+		} else {
+			_ = r.finishDeployment(context.Background(), deploymentID, "deployed", "")
 		}
 	}()
 
@@ -100,7 +178,8 @@ func (r *Runner) DeployGitHub(ctx context.Context, site sites.Site) (Result, err
 	}
 	archivePath := archiveFile.Name()
 	defer os.Remove(archivePath)
-	if err := r.github.DownloadArchive(ctx, *site.Repository.GitHubInstallationID, site.Repository.GitHubFullName, branch, archiveFile); err != nil {
+	logs.add("deployment", "Downloading GitHub archive for "+archiveRef)
+	if err := r.github.DownloadArchive(ctx, *site.Repository.GitHubInstallationID, site.Repository.GitHubFullName, archiveRef, archiveFile); err != nil {
 		archiveFile.Close()
 		return Result{}, err
 	}
@@ -116,11 +195,12 @@ func (r *Runner) DeployGitHub(ctx context.Context, site sites.Site) (Result, err
 	if err := extractArchive(archivePath, stagePath); err != nil {
 		return Result{}, err
 	}
+	logs.add("deployment", "Archive extracted and staged")
 	releasePath := filepath.Join(releasesRoot, releaseID)
 	if err := os.Rename(stagePath, releasePath); err != nil {
 		return Result{}, fmt.Errorf("finalize release: %w", err)
 	}
-	if err := r.createRelease(ctx, releaseID, site.ID, deploymentID, releasePath); err != nil {
+	if err := r.createRelease(ctx, releaseID, site.ID, deploymentID, releasePath, commit.SHA); err != nil {
 		return Result{}, err
 	}
 
@@ -131,28 +211,26 @@ func (r *Runner) DeployGitHub(ctx context.Context, site sites.Site) (Result, err
 	if err := replaceSymlink(nextPath, currentPath); err != nil {
 		return Result{}, fmt.Errorf("activate release: %w", err)
 	}
+	logs.add("deployment", "Activated release "+releaseID)
 	if err := r.activateRelease(ctx, site.ID, releaseID); err != nil {
 		return Result{}, err
 	}
-	if err := r.finishDeployment(ctx, deploymentID, "completed", ""); err != nil {
-		return Result{}, err
-	}
 	failed = false
-	return Result{DeploymentID: deploymentID, ReleaseID: releaseID, ReleasePath: releasePath, Status: "completed"}, nil
+	return Result{DeploymentID: deploymentID, ReleaseID: releaseID, ReleasePath: releasePath, Commit: commit.SHA, Status: "deployed"}, nil
 }
 
-func (r *Runner) createDeployment(ctx context.Context, id, siteID, branch string) error {
+func (r *Runner) createDeployment(ctx context.Context, id, siteID, branch string, commit githubconnector.Commit) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := r.db.ExecContext(ctx, `INSERT INTO deployments(id, site_id, trigger_type, branch, status, queued_at, started_at, created_at) VALUES (?, ?, 'manual', ?, 'running', ?, ?, ?)`, id, siteID, branch, now, now, now)
+	_, err := r.db.ExecContext(ctx, `INSERT INTO deployments(id, site_id, trigger_type, branch, commit_sha, commit_message, commit_url, deployment_method, status, queued_at, started_at, created_at) VALUES (?, ?, 'manual', ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), 'manual', 'running', ?, ?, ?)`, id, siteID, branch, commit.SHA, commit.Message, commit.URL, now, now, now)
 	if err != nil {
 		return fmt.Errorf("create deployment record: %w", err)
 	}
 	return nil
 }
 
-func (r *Runner) createRelease(ctx context.Context, id, siteID, deploymentID, releasePath string) error {
+func (r *Runner) createRelease(ctx context.Context, id, siteID, deploymentID, releasePath, commitSHA string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := r.db.ExecContext(ctx, `INSERT INTO releases(id, site_id, deployment_id, release_name, release_path, active, created_at) VALUES (?, ?, ?, ?, ?, 0, ?)`, id, siteID, deploymentID, id, releasePath, now)
+	_, err := r.db.ExecContext(ctx, `INSERT INTO releases(id, site_id, deployment_id, release_name, release_path, commit_sha, active, created_at) VALUES (?, ?, ?, ?, ?, NULLIF(?, ''), 0, ?)`, id, siteID, deploymentID, id, releasePath, commitSHA, now)
 	if err != nil {
 		return fmt.Errorf("create release record: %w", err)
 	}

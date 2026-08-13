@@ -9,6 +9,7 @@ import {
   ChevronDown,
   CircleAlert,
   CircleDot,
+  CircleX,
   CircleHelp,
   Clock3,
   Code2,
@@ -49,8 +50,10 @@ type Site = {
   framework: string;
   strategy: string;
   status: string;
+  runtime?: Record<string, any>;
+  created_at: string;
+  updated_at: string;
   repository?: { provider: string; clone_url: string; branch: string };
-  runtime?: { permissions?: { status: string; deployable: boolean } };
 };
 type DiscoveredSite = Site & {
   detection: { confidence: string; evidence: string[]; document_root: string };
@@ -70,6 +73,8 @@ type GithubRepository = {
   ssh_url: string;
 };
 type GithubInstallation = { github_installation_id: number; account_login: string; account_type: string; repository_selection: string; };
+type Deployment = { id: string; site_id: string; trigger_type: string; deployment_method?: string; branch: string; commit_sha: string; commit_message: string; commit_url: string; status: string; error_code?: string; error_summary?: string; queued_at: string; started_at?: string; finished_at?: string; duration_ms?: number; created_at: string; build_log?: string; deployment_log?: string; };
+type Commit = { sha: string; message: string; branch: string; author?: string; url?: string; created_at?: string; deployed: boolean; deployment_id?: string; status: string; };
 
 type GithubState = {
   configured: boolean;
@@ -87,6 +92,17 @@ const isDark = ref(true);
 const commandOpen = ref(false);
 const commandQuery = ref('');
 const activeNav = ref('Dashboard');
+const selectedSite = ref<Site | null>(null);
+const selectedSiteTab = ref<'Overview' | 'Deployments'>('Overview');
+const selectedDeployment = ref<Deployment | null>(null);
+const siteDeployments = ref<Deployment[]>([]);
+const siteCommits = ref<Commit[]>([]);
+const sitePage = ref(1);
+const siteTotalPages = ref(1);
+const deploymentSearch = ref('');
+const siteDetailLoading = ref(false);
+const deploymentDetailLoading = ref(false);
+const deployingCommitSha = ref('');
 const sites = ref<Site[]>([]);
 const sitesLoading = ref(false);
 const discoveryOpen = ref(false);
@@ -135,6 +151,42 @@ let importCloseTimer: ReturnType<typeof setTimeout> | undefined;
 let githubPairingSessionId = '';
 let githubPairingToken = '';
 let githubPairingHandled = false;
+
+function frameworkLabel(framework: string) {
+  const labels: Record<string, string> = { laravel: 'Laravel', wordpress: 'WordPress', php: 'PHP', static: 'Plain script', flarum: 'Flarum' };
+  return labels[framework] || (framework ? framework.charAt(0).toUpperCase() + framework.slice(1) : 'Plain script');
+}
+
+function relativeTime(value?: string) {
+  if (!value) return 'Not yet';
+  const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).getTime()) / 1000));
+  if (seconds < 60) return 'just now';
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
+  return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+function durationLabel(milliseconds?: number) {
+  if (!milliseconds) return '—';
+  if (milliseconds < 1000) return `${milliseconds}ms`;
+  return `${(milliseconds / 1000).toFixed(1)}s`;
+}
+
+function siteRuntime(site: Site | null, key: string, fallback = 'Not detected') {
+  const runtime = site?.runtime || {};
+  const metadata = (runtime.metadata || {}) as Record<string, any>;
+  return String(runtime[key] || metadata[key] || fallback);
+}
+
+function sitePublicURL(site: Site | null) {
+  if (!site) return '';
+  return siteRuntime(site, 'url', site.hostname ? `https://${site.hostname}` : 'Not configured');
+}
+
+function copyPublicIP(site: Site | null) {
+  const value = siteRuntime(site, 'public_ip', 'Not detected');
+  if (value !== 'Not detected') navigator.clipboard?.writeText(value);
+}
 
 function emptyGithubState(): GithubState {
   return { configured: false, mode: 'managed', configuration_error: 'Zion Connector is not provisioned for this ReleaseStation instance', connected: false, app_slug: '', setup_url: '', installations: [] };
@@ -249,6 +301,93 @@ async function loadSites() {
   } finally {
     sitesLoading.value = false;
   }
+}
+
+async function loadSiteHistory() {
+  if (!selectedSite.value) return;
+  siteDetailLoading.value = true;
+  try {
+    const [deploymentResponse, commitResponse] = await Promise.all([
+      fetch(`/releasestation/api/v1/sites/${selectedSite.value.id}/deployments?page=${sitePage.value}&per_page=25&q=${encodeURIComponent(deploymentSearch.value)}`, { headers: { Accept: 'application/json' } }),
+      fetch(`/releasestation/api/v1/sites/${selectedSite.value.id}/commits`, { headers: { Accept: 'application/json' } }),
+    ]);
+    const deploymentPayload = await deploymentResponse.json().catch(() => ({}));
+    const commitPayload = await commitResponse.json().catch(() => ({}));
+    if (!deploymentResponse.ok) throw new Error(deploymentPayload.error?.message || 'Could not load deployments.');
+    siteDeployments.value = deploymentPayload.data?.items || [];
+    siteTotalPages.value = deploymentPayload.data?.total_pages || 1;
+    siteCommits.value = commitResponse.ok ? (commitPayload.data || []) : [];
+  } catch (error) {
+    deployError.value = error instanceof Error ? error.message : 'Could not load site history.';
+  } finally {
+    siteDetailLoading.value = false;
+  }
+}
+
+function openSite(site: Site) {
+  selectedSite.value = site;
+  selectedSiteTab.value = 'Overview';
+  selectedDeployment.value = null;
+  sitePage.value = 1;
+  deploymentSearch.value = '';
+  activeNav.value = 'SiteDetail';
+  loadSiteHistory();
+}
+
+function closeSiteDetail() {
+  selectedSite.value = null;
+  selectedDeployment.value = null;
+  activeNav.value = 'Sites';
+}
+
+async function openDeploymentDetails(deployment: Deployment) {
+  if (!selectedSite.value) return;
+  selectedDeployment.value = deployment;
+  activeNav.value = 'DeploymentDetail';
+  deploymentDetailLoading.value = true;
+  try {
+    const response = await fetch(`/releasestation/api/v1/sites/${selectedSite.value.id}/deployments/${deployment.id}`, { headers: { Accept: 'application/json' } });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error?.message || 'Could not load deployment details.');
+    selectedDeployment.value = payload.data;
+  } catch (error) {
+    deployError.value = error instanceof Error ? error.message : 'Could not load deployment details.';
+  } finally {
+    deploymentDetailLoading.value = false;
+  }
+}
+
+function backToSiteTab(tab: 'Overview' | 'Deployments' = 'Overview') {
+  selectedDeployment.value = null;
+  selectedSiteTab.value = tab;
+  activeNav.value = 'SiteDetail';
+}
+
+async function deployCommit(commit: Commit) {
+  if (!selectedSite.value || deployingCommitSha.value) return;
+  deployingCommitSha.value = commit.sha;
+  deployMessage.value = '';
+  deployError.value = '';
+  try {
+    const response = await fetch(`/releasestation/api/v1/sites/${selectedSite.value.id}/deploy`, {
+      method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ ref: commit.sha }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error?.message || 'Deployment failed.');
+    deployMessage.value = `${commit.sha.slice(0, 7)} deployed successfully.`;
+    await loadSiteHistory();
+  } catch (error) {
+    deployError.value = error instanceof Error ? error.message : 'Deployment failed.';
+    await loadSiteHistory();
+  } finally {
+    deployingCommitSha.value = '';
+  }
+}
+
+function setDeploymentPage(page: number) {
+  if (page < 1 || page > siteTotalPages.value) return;
+  sitePage.value = page;
+  loadSiteHistory();
 }
 
 async function loadWebStationStatus() {
@@ -800,7 +939,7 @@ onBeforeUnmount(() => {
             <strong>{{ sitesLoading ? 'Loading managed sites' : 'No managed sites yet' }}</strong>
             <span>Discover existing Web Station applications or add a site manually.</span>
           </article>
-          <article v-for="site in sites" :key="site.id" class="site-card" :class="siteClass(site)">
+          <article v-for="site in sites" :key="site.id" class="site-card" :class="siteClass(site)" tabindex="0" role="button" @click="openSite(site)" @keydown.enter="openSite(site)">
             <div class="site-card-top"><span class="framework-mark"><Code2 :size="17" /></span><button class="more-button" type="button"><MoreHorizontal :size="17" /></button></div>
             <div class="site-domain">{{ site.hostname || site.name }}</div><div class="site-framework">{{ site.framework }}</div>
             <div class="site-status" :class="{ 'site-status-warning': site.status !== 'active' }"><span class="status-dot" />{{ displayStatus(site.status) }}<span class="site-status-time">{{ site.strategy }}</span></div>
@@ -815,12 +954,36 @@ onBeforeUnmount(() => {
           <div class="sites-management-header"><div><div class="eyebrow"><span class="eyebrow-pulse" /> SITE CATALOG</div><h1>Managed sites.</h1><p class="hero-copy">Review imported Web Station applications, document roots and deployment readiness.</p></div><div class="hero-actions"><button class="button button-secondary" type="button" @click="loadSites"><RotateCw :size="15" />Refresh</button><button class="button button-secondary" type="button" @click="openDiscovery"><Globe2 :size="15" />Discover Web Station</button><button class="button button-primary" type="button" @click="openWizard"><Plus :size="15" />Add site</button></div></div>
           <div class="sites-management-summary"><span><strong>{{ sites.length }}</strong> managed sites</span><span><span class="status-dot" />{{ webStationLabel }}</span><span>Discovery adapter: read-only</span></div>
           <div v-if="sites.length" class="management-list">
-            <article v-for="site in sites" :key="site.id" class="management-row">
-              <button class="button button-secondary" type="button" :disabled="deployingSiteId === site.id || !site.repository || site.strategy !== 'atomic'" @click="deploySite(site)">{{ deployingSiteId === site.id ? 'Deploying…' : 'Deploy' }} <Play :size="14" /></button>
-              <span class="framework-mark"><Code2 :size="17" /></span><span class="management-copy"><strong>{{ site.hostname || site.name }}</strong><small>{{ site.framework }} · {{ site.web_root }}</small><small>{{ site.project_root }}</small></span><span class="discovery-badge" :class="site.status === 'active' ? 'ready' : 'read_only'">{{ displayStatus(site.status) }}</span><button class="more-button" type="button" aria-label="Archive site" @click="archiveSite(site)"><X :size="15" /></button>
+            <article v-for="site in sites" :key="site.id" class="management-row" tabindex="0" role="button" @click="openSite(site)" @keydown.enter="openSite(site)">
+              <button class="button button-secondary" type="button" :disabled="deployingSiteId === site.id || !site.repository || site.strategy !== 'atomic'" @click.stop="deploySite(site)">{{ deployingSiteId === site.id ? 'Deploying…' : 'Deploy' }} <Play :size="14" /></button>
+              <span class="framework-mark"><Code2 :size="17" /></span><span class="management-copy"><strong>{{ site.hostname || site.name }}</strong><small>{{ frameworkLabel(site.framework) }} · {{ site.web_root }}</small><small>{{ site.project_root }}</small></span><span class="discovery-badge" :class="site.status === 'active' ? 'ready' : 'read_only'">{{ displayStatus(site.status) }}</span><button class="more-button" type="button" aria-label="Archive site" @click.stop="archiveSite(site)"><X :size="15" /></button>
             </article>
           </div>
           <div v-else class="management-empty"><Globe2 :size="24" /><strong>No sites are managed yet</strong><span>Discover a Web Station application or configure one manually.</span><div class="hero-actions"><button class="button button-secondary" type="button" @click="openDiscovery">Discover applications</button><button class="button button-primary" type="button" @click="openWizard">Add manually</button></div></div>
+        </section>
+
+        <section v-if="activeNav === 'SiteDetail' && selectedSite" class="site-detail-view">
+          <div class="site-detail-header"><div><button class="text-button" type="button" @click="closeSiteDetail">← All sites</button><div class="eyebrow"><span class="eyebrow-pulse" /> SITE WORKSPACE</div><h1>{{ selectedSite.hostname || selectedSite.name }}.</h1><p class="hero-copy">{{ frameworkLabel(selectedSite.framework) }} · {{ selectedSite.project_root }}</p></div><div class="hero-actions"><a v-if="sitePublicURL(selectedSite).startsWith('http')" class="button button-secondary" :href="sitePublicURL(selectedSite)" target="_blank" rel="noreferrer"><Globe2 :size="15" />Visit</a><button class="button button-primary" type="button" :disabled="!selectedSite.repository || selectedSite.strategy !== 'atomic'" @click="deploySite(selectedSite)"><Play :size="15" />Deploy</button></div></div>
+          <div class="site-tabs"><button type="button" :class="{ active: selectedSiteTab === 'Overview' }" @click="selectedSiteTab = 'Overview'">Overview</button><button type="button" :class="{ active: selectedSiteTab === 'Deployments' }" @click="selectedSiteTab = 'Deployments'">Deployments <span>{{ siteDeployments.length }}</span></button></div>
+          <template v-if="selectedSiteTab === 'Overview'">
+            <div class="site-meta-grid"><article class="panel site-meta-card"><span>Framework</span><strong>{{ frameworkLabel(selectedSite.framework) }}</strong></article><article class="panel site-meta-card"><span>PHP</span><strong>{{ siteRuntime(selectedSite, 'php_version', '8.5') }}</strong></article><article class="panel site-meta-card"><span>HTTP server</span><strong>{{ siteRuntime(selectedSite, 'http_server', 'Detected by Web Station') }}</strong></article><article class="panel site-meta-card"><span>Public IP</span><button type="button" @click="copyPublicIP(selectedSite)">{{ siteRuntime(selectedSite, 'public_ip', 'Not detected') }}</button></article><article class="panel site-meta-card"><span>Public Web</span><a :href="sitePublicURL(selectedSite)" target="_blank" rel="noreferrer">{{ sitePublicURL(selectedSite) }}</a></article><article class="panel site-meta-card"><span>Created</span><strong>{{ new Date(selectedSite.created_at).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) }}</strong></article></div>
+            <div class="detail-section-heading"><div><div class="panel-kicker">SOURCE HISTORY</div><h2>Commits</h2></div><span class="muted-copy">{{ selectedSite.repository?.branch || 'main' }}</span></div>
+            <div v-if="siteDetailLoading" class="detail-loading"><RotateCw :size="16" class="spin" /> Loading repository history…</div>
+            <div v-else-if="siteCommits.length" class="commit-table"><div v-for="commit in siteCommits" :key="commit.sha" class="commit-row" :class="commit.status"><span class="commit-state" :class="commit.status" v-if="commit.deployed"><Check :size="13" /></span><span class="commit-state failed" v-else-if="commit.status === 'failed'"><CircleX :size="13" /></span><span class="commit-state pending" v-else><CircleDot :size="13" /></span><code>{{ commit.sha.slice(0, 7) }}</code><span class="commit-message"><strong>{{ commit.message.split('\n')[0] }}</strong><small>{{ commit.author || 'GitHub' }} · {{ relativeTime(commit.created_at) }}</small></span><span class="commit-status">{{ commit.deployed ? 'Deployed' : (commit.status === 'failed' ? 'Failed' : 'Not deployed') }}</span><button class="button button-secondary commit-deploy" type="button" :disabled="deployingCommitSha !== '' || commit.deployed || selectedSite.strategy !== 'atomic'" @click="deployCommit(commit)"><RotateCw v-if="deployingCommitSha === commit.sha" :size="13" class="spin" /><span v-else>Deploy</span></button></div></div>
+            <div v-else class="management-empty"><GitBranch :size="22" /><strong>No commits available</strong><span>Connect GitHub and configure a repository for this site to see commit history.</span></div>
+          </template>
+          <template v-else>
+            <div class="deployments-toolbar"><div><div class="panel-kicker">DEPLOYMENT HISTORY</div><h2>Deployments</h2></div><input v-model="deploymentSearch" type="search" placeholder="Search commit name…" @change="sitePage = 1; loadSiteHistory()" /></div>
+            <div v-if="siteDeployments.length" class="deployment-history-list"><button v-for="deployment in siteDeployments" :key="deployment.id" class="deployment-history-row" type="button" @click="openDeploymentDetails(deployment)"><span class="commit-state" :class="deployment.status"><Check v-if="deployment.status === 'deployed'" :size="13" /><RotateCw v-else-if="deployment.status === 'running'" :size="13" class="spin" /><CircleX v-else :size="13" /></span><code>{{ deployment.commit_sha ? deployment.commit_sha.slice(0, 7) : 'unknown' }}</code><span class="commit-message"><strong>{{ deployment.commit_message || 'Deployment without commit metadata' }}</strong><small>{{ deployment.branch || '—' }} · {{ relativeTime(deployment.created_at) }} · {{ durationLabel(deployment.duration_ms) }}</small></span><span class="discovery-badge" :class="deployment.status">{{ deployment.status }}</span><span class="row-arrow">→</span></button></div><div v-else class="management-empty"><Clock3 :size="22" /><strong>No deployments yet</strong><span>Deploy a commit from Overview to build the deployment history.</span></div>
+            <div class="pagination"><button type="button" :disabled="sitePage <= 1" @click="setDeploymentPage(sitePage - 1)">Previous</button><span>Page {{ sitePage }} of {{ siteTotalPages }}</span><button type="button" :disabled="sitePage >= siteTotalPages" @click="setDeploymentPage(sitePage + 1)">Next</button></div>
+          </template>
+        </section>
+
+        <section v-if="activeNav === 'DeploymentDetail' && selectedSite && selectedDeployment" class="deployment-detail-view">
+          <div class="deployment-detail-header"><div><button class="text-button" type="button" @click="backToSiteTab('Deployments')">← Back to deployments</button><h1>Deployment details <span>·</span> <code>{{ selectedDeployment.commit_sha ? selectedDeployment.commit_sha.slice(0, 7) : 'unknown' }}</code></h1><div class="deployment-detail-meta"><span class="commit-state" :class="selectedDeployment.status"><Check v-if="selectedDeployment.status === 'deployed'" :size="13" /><CircleX v-else :size="13" /></span><strong>{{ selectedDeployment.status }}</strong><span>{{ selectedDeployment.branch }}</span><span>·</span><span>{{ selectedDeployment.commit_message || 'No commit message' }}</span><span>·</span><span>{{ relativeTime(selectedDeployment.finished_at || selectedDeployment.created_at) }}</span><span>·</span><span>{{ durationLabel(selectedDeployment.duration_ms) }}</span></div></div><div class="hero-actions"><a v-if="sitePublicURL(selectedSite).startsWith('http')" class="button button-secondary" :href="sitePublicURL(selectedSite)" target="_blank" rel="noreferrer"><Globe2 :size="15" />Visit</a><button class="button button-secondary" type="button" @click="backToSiteTab('Deployments')">Collapse / expand all</button></div></div>
+          <div class="detail-facts"><span><strong>Method</strong>{{ selectedDeployment.deployment_method || selectedDeployment.trigger_type || 'manual' }}</span><span><strong>Branch</strong>{{ selectedDeployment.branch || '—' }}</span><span><strong>Commit</strong>{{ selectedDeployment.commit_sha || '—' }}</span><span><strong>Started</strong>{{ selectedDeployment.started_at || '—' }}</span></div>
+          <details open class="log-panel"><summary><span class="commit-state deployed"><Check :size="13" /></span><strong>Build logs</strong><span>{{ durationLabel(selectedDeployment.duration_ms) }}</span></summary><pre>{{ selectedDeployment.build_log || 'No build output was captured.' }}</pre></details>
+          <details open class="log-panel"><summary><span class="commit-state deployed"><Check :size="13" /></span><strong>Deployment logs</strong><span>{{ durationLabel(selectedDeployment.duration_ms) }}</span></summary><pre>{{ selectedDeployment.deployment_log || 'No deployment output was captured.' }}</pre></details>
         </section>
 
         <section v-if="activeNav === 'Settings'" class="settings-view">

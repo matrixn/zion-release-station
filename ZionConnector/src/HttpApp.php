@@ -84,6 +84,14 @@ final class HttpApp
                     $this->branches($instanceId, $suffix);
                     return;
                 }
+                if ($resource === 'repositories' && $method === 'GET' && str_ends_with($suffix, '/commits')) {
+                    $this->commits($instanceId, $suffix);
+                    return;
+                }
+                if ($resource === 'repositories' && $method === 'GET' && str_ends_with($suffix, '/commit')) {
+                    $this->commit($instanceId, $suffix);
+                    return;
+                }
                 if ($resource === 'repositories' && $method === 'GET' && str_ends_with($suffix, '/archive')) {
                     $this->archive($instanceId, $suffix);
                     return;
@@ -345,6 +353,58 @@ final class HttpApp
             return;
         }
         $this->json(200, ['branches' => $this->github->branches($installationId, rawurldecode($matches[1]), rawurldecode($matches[2]))]);
+    }
+
+    private function commits(string $instanceId, string $suffix): void
+    {
+        if (preg_match('#^([^/]+)/([^/]+)/commits$#', $suffix, $matches) !== 1) {
+            $this->json(422, ['error' => ['code' => 'INVALID_REPOSITORY', 'message' => 'Repository must use owner/name format.']]);
+            return;
+        }
+        $installationId = filter_var($_GET['installation_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        $branch = trim((string) ($_GET['branch'] ?? ''));
+        $perPage = filter_var($_GET['per_page'] ?? 30, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 100]]);
+        if (!is_int($installationId) || !$this->database->hasInstallation($instanceId, $installationId) || $branch === '') {
+            $this->json(422, ['error' => ['code' => 'INVALID_COMMIT_REQUEST', 'message' => 'A connected installation and branch are required.']]);
+            return;
+        }
+        $items = [];
+        foreach ($this->github->commits($installationId, rawurldecode($matches[1]), rawurldecode($matches[2]), $branch, is_int($perPage) ? $perPage : 30) as $commit) {
+            $commitAuthor = is_array($commit['commit']['author'] ?? null) ? $commit['commit']['author'] : [];
+            $items[] = [
+                'sha' => (string) ($commit['sha'] ?? ''),
+                'message' => trim((string) ($commit['commit']['message'] ?? '')),
+                'branch' => $branch,
+                'author' => (string) ($commit['author']['login'] ?? $commitAuthor['name'] ?? ''),
+                'url' => (string) ($commit['html_url'] ?? ''),
+                'created_at' => (string) ($commitAuthor['date'] ?? ''),
+            ];
+        }
+        $this->json(200, ['commits' => $items]);
+    }
+
+    private function commit(string $instanceId, string $suffix): void
+    {
+        if (preg_match('#^([^/]+)/([^/]+)/commit$#', $suffix, $matches) !== 1) {
+            $this->json(422, ['error' => ['code' => 'INVALID_REPOSITORY', 'message' => 'Repository must use owner/name format.']]);
+            return;
+        }
+        $installationId = filter_var($_GET['installation_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        $ref = trim((string) ($_GET['ref'] ?? ''));
+        if (!is_int($installationId) || !$this->database->hasInstallation($instanceId, $installationId) || $ref === '') {
+            $this->json(422, ['error' => ['code' => 'INVALID_COMMIT_REQUEST', 'message' => 'A connected installation and commit reference are required.']]);
+            return;
+        }
+        $commit = $this->github->commit($installationId, rawurldecode($matches[1]), rawurldecode($matches[2]), $ref);
+        $commitAuthor = is_array($commit['commit']['author'] ?? null) ? $commit['commit']['author'] : [];
+        $this->json(200, [
+            'sha' => (string) ($commit['sha'] ?? ''),
+            'message' => trim((string) ($commit['commit']['message'] ?? '')),
+            'branch' => $ref,
+            'author' => (string) ($commit['author']['login'] ?? $commitAuthor['name'] ?? ''),
+            'url' => (string) ($commit['html_url'] ?? ''),
+            'created_at' => (string) ($commitAuthor['date'] ?? ''),
+        ]);
     }
 
     private function archive(string $instanceId, string $suffix): void

@@ -117,6 +117,39 @@ final class GitHubClient
         throw new RuntimeException('Repository is not accessible by this GitHub installation.');
     }
 
+    /** @return list<array<string,mixed>> */
+    public function commits(int $installationId, string $owner, string $repo, string $branch, int $perPage = 30): array
+    {
+        $token = $this->installationToken($installationId);
+        $query = http_build_query(['sha' => $branch, 'per_page' => min(100, max(1, $perPage))], '', '&', PHP_QUERY_RFC3986);
+        $items = $this->request(
+            'GET',
+            'https://api.github.com/repos/' . rawurlencode($owner) . '/' . rawurlencode($repo) . '/commits?' . $query,
+            null,
+            $this->installationHeaders($token),
+        );
+        if (!is_array($items)) {
+            throw new RuntimeException('GitHub returned an invalid commit list.');
+        }
+        return array_values(array_filter($items, static fn (mixed $item): bool => is_array($item)));
+    }
+
+    /** @return array<string,mixed> */
+    public function commit(int $installationId, string $owner, string $repo, string $ref): array
+    {
+        $token = $this->installationToken($installationId);
+        $item = $this->request(
+            'GET',
+            'https://api.github.com/repos/' . rawurlencode($owner) . '/' . rawurlencode($repo) . '/commits/' . rawurlencode($ref),
+            null,
+            $this->installationHeaders($token),
+        );
+        if (!is_array($item)) {
+            throw new RuntimeException('GitHub returned an invalid commit.');
+        }
+        return $item;
+    }
+
     /** @return string GitHub tar.gz archive bytes */
     public function archive(int $installationId, string $owner, string $repo, string $ref): string
     {
