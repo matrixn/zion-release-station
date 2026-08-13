@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+
+	"github.com/matrixn/zion-release-station/internal/systemchecks"
 )
 
 type dashboardMetrics struct {
@@ -58,10 +60,19 @@ func (s *Server) dashboardMetrics(ctx context.Context) (dashboardMetrics, error)
 	webAvailable, webErr := s.webStation.Available(ctx)
 	githubReady := s.githubManaged.Configured()
 	result.Services = []map[string]any{
-		{"label": "Web Station", "state": state(webAvailable && webErr == nil), "detail": serviceDetail(webAvailable, webErr, "Configured roots available", "No readable roots detected")},
-		{"label": "GitHub connector", "state": state(githubReady), "detail": serviceDetail(githubReady, nil, "Connected and ready", s.githubManaged.ConfigurationError())},
-		{"label": "Git transport", "state": state(commandAvailable("git")), "detail": serviceDetail(commandAvailable("git"), nil, "Git executable available", "Git executable unavailable")},
-		{"label": "SQLite", "state": state(s.db.PingContext(ctx) == nil), "detail": "Database connection"},
+		{"id": "webstation", "label": "Web Station", "state": state(webAvailable && webErr == nil), "detail": serviceDetail(webAvailable, webErr, "Configured roots available", "No readable roots detected")},
+		{"id": "github_connector", "label": "GitHub connector", "state": state(githubReady), "detail": serviceDetail(githubReady, nil, "Connected and ready", s.githubManaged.ConfigurationError())},
+		{"id": "sqlite", "label": "SQLite", "state": state(s.db.PingContext(ctx) == nil), "detail": "Database connection"},
+	}
+	ids, err := s.enabledSystemChecks(ctx)
+	if err != nil {
+		return dashboardMetrics{}, fmt.Errorf("read System Overview checks: %w", err)
+	}
+	for _, item := range systemchecks.Run(ctx, ids) {
+		result.Services = append(result.Services, map[string]any{
+			"id": item.ID, "label": item.Label, "command": item.Command, "state": item.State, "detail": item.Detail,
+			"description": item.Description, "install_hint": item.InstallHint, "version": item.Version,
+		})
 	}
 	return result, nil
 }

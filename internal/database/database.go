@@ -64,6 +64,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		{version: "0003_managed_github_only", file: "migrations/0003_managed_github_only.sql"},
 		{version: "0004_deployment_history", file: "migrations/0004_deployment_history.sql"},
 		{version: "0005_site_settings", file: "migrations/0005_site_settings.sql"},
+		{version: "0006_system_overview_checks", file: "migrations/0006_system_overview_checks.sql"},
 	}
 	for _, migration := range migrations {
 		var applied bool

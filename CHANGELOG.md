@@ -4,6 +4,8 @@ Istoricul de mai jos păstrează evoluția proiectului și explică problema sau
 
 ## Unreleased
 
+- **Script atomic implicit și toolchain checks** — site-urile Atomic primesc automat un script revizuibil care pregătește `.current`, copiază release-ul în document root prin staging și rename atomic, iar scripturile personalizate salvate în Settings sunt executate cu variabilele `PROJECT_ROOT`, `CURRENT_DIR`, `RELEASE_DIR`, `WEB_ROOT`, `RELEASE_ID`, `DEPLOYMENT_ID` și `COMMIT_SHA`. Site-urile vechi primesc același script când sunt trecute pe Atomic.
+- **System Overview configurabil** — Settings permite selectarea verificărilor pentru PHP, Composer, Node.js, npm, Git, rsync, unzip, tar, curl și clientul MariaDB/MySQL. Dashboard-ul rulează verificări reale pe NAS, afișează versiunea/calea detectată și Help Center oferă comenzile și pașii DSM pentru fiecare verificare.
 - **Site history după adăugare/configurare** — după crearea unui site manual sau salvarea unui repository, aplicația deschide site-ul și încarcă imediat commiturile branch-ului configurat. Fiecare commit este comparat cu deployment history și apare ca deployed, failed sau not deployed.
 - **Commit envelope Synology Connector** — endpointul connectorului răspunde cu { "commits": [...] }, nu cu un array direct. Clientul Go decodează acum formatul real și are test de regresie.
 - **Taburi site** — ordinea este acum Overview, Deployments, Repository, Settings.
@@ -201,4 +203,3 @@ Adaugă Settings per site, framework custom, tags, color, push-to-deploy configu
 ### fcf63a9 — Improve
 
 Adaugă Help Center, linkuri Read more pentru System Overview, păstrează pagina selectată la refresh, încarcă commiturile imediat după configurarea repository-ului și introduce toast-uri floating pentru deployment.
-

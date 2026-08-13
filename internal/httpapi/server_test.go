@@ -44,6 +44,37 @@ func TestHealthEndpointReportsReadyDatabase(t *testing.T) {
 	}
 }
 
+func TestSystemOverviewChecksCanBeConfigured(t *testing.T) {
+	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(config.Config{WebRoot: t.TempDir(), Version: "0.1.0-test"}, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/releasestation/api/v1/system/checks", nil)
+	server.http.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"id":"composer"`) {
+		t.Fatalf("expected default toolchain checks, got %d %q", recorder.Code, recorder.Body.String())
+	}
+
+	recorder = httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodPut, "/releasestation/api/v1/system/checks", strings.NewReader(`{"enabled":["php","composer"]}`))
+	request.Header.Set("Content-Type", "application/json")
+	server.http.Handler.ServeHTTP(recorder, request)
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"php"`) {
+		t.Fatalf("expected toolchain checks to save, got %d %q", recorder.Code, recorder.Body.String())
+	}
+
+	metrics := httptest.NewRecorder()
+	request = httptest.NewRequest(http.MethodGet, "/releasestation/api/v1/system/metrics", nil)
+	server.http.Handler.ServeHTTP(metrics, request)
+	if metrics.Code != http.StatusOK || !strings.Contains(metrics.Body.String(), `"id":"php"`) || strings.Contains(metrics.Body.String(), `"id":"node"`) {
+		t.Fatalf("expected metrics to follow selected checks, got %d %q", metrics.Code, metrics.Body.String())
+	}
+}
+
 func TestWebAccessSettingHidesWebWorkspace(t *testing.T) {
 	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
 	if err != nil {

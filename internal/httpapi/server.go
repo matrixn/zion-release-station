@@ -16,6 +16,7 @@ import (
 	"github.com/matrixn/zion-release-station/internal/detection"
 	"github.com/matrixn/zion-release-station/internal/githubconnector"
 	"github.com/matrixn/zion-release-station/internal/sites"
+	"github.com/matrixn/zion-release-station/internal/systemchecks"
 	"github.com/matrixn/zion-release-station/internal/webstation"
 )
 
@@ -31,6 +32,7 @@ type Server struct {
 }
 
 const webAccessSettingKey = "web_access_enabled"
+const systemOverviewChecksSettingKey = "system_overview_checks"
 
 func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 	server := &Server{
@@ -51,11 +53,13 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 	mux.HandleFunc("/releasestation/api/v1/system/info", server.handleInfo)
 	mux.HandleFunc("/releasestation/api/v1/system/capabilities", server.handleCapabilities)
 	mux.HandleFunc("/releasestation/api/v1/system/metrics", server.handleMetrics)
+	mux.HandleFunc("/releasestation/api/v1/system/checks", server.handleSystemChecks)
 	mux.HandleFunc("/releasestation/api/v1/settings/web-access", server.handleWebAccess)
 	mux.HandleFunc("/api/v1/system/health", server.handleHealth)
 	mux.HandleFunc("/api/v1/system/info", server.handleInfo)
 	mux.HandleFunc("/api/v1/system/capabilities", server.handleCapabilities)
 	mux.HandleFunc("/api/v1/system/metrics", server.handleMetrics)
+	mux.HandleFunc("/api/v1/system/checks", server.handleSystemChecks)
 	mux.HandleFunc("/api/v1/settings/web-access", server.handleWebAccess)
 	server.registerSiteRoutes(mux, "/releasestation/api/v1")
 	server.registerSiteRoutes(mux, "/api/v1")
@@ -162,6 +166,63 @@ func (s *Server) handleCapabilities(w http.ResponseWriter, r *http.Request) {
 		"database":   true,
 		"deployment": "atomic-github",
 	}})
+}
+
+func (s *Server) handleSystemChecks(w http.ResponseWriter, r *http.Request) {
+	switch r.Method {
+	case http.MethodGet:
+		ids, err := s.enabledSystemChecks(r.Context())
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "SETTINGS_UNAVAILABLE", "Unable to read System Overview checks.")
+			return
+		}
+		selected := make(map[string]bool, len(ids))
+		for _, id := range ids {
+			selected[id] = true
+		}
+		items := make([]map[string]any, 0)
+		for _, definition := range systemchecks.Definitions() {
+			items = append(items, map[string]any{
+				"id": definition.ID, "label": definition.Label, "command": definition.Command,
+				"description": definition.Description, "install_hint": definition.InstallHint,
+				"enabled": selected[definition.ID],
+			})
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"checks": items, "enabled": ids}})
+	case http.MethodPut:
+		var payload struct {
+			Enabled []string `json:"enabled"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			writeError(w, http.StatusBadRequest, "INVALID_SETTINGS", "Enabled checks must be an array of check IDs.")
+			return
+		}
+		ids := systemchecks.NormalizeIDs(payload.Enabled)
+		encoded, err := json.Marshal(ids)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "SETTINGS_UNAVAILABLE", "Unable to encode System Overview checks.")
+			return
+		}
+		if _, err := s.db.ExecContext(r.Context(), `INSERT INTO settings(key, value_json, updated_at) VALUES (?, ?, datetime('now')) ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at`, systemOverviewChecksSettingKey, string(encoded)); err != nil {
+			writeError(w, http.StatusInternalServerError, "SETTINGS_UNAVAILABLE", "Unable to save System Overview checks.")
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{"enabled": ids}})
+	default:
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only GET and PUT are supported.")
+	}
+}
+
+func (s *Server) enabledSystemChecks(ctx context.Context) ([]string, error) {
+	var value string
+	if err := s.db.QueryRowContext(ctx, `SELECT value_json FROM settings WHERE key = ?`, systemOverviewChecksSettingKey).Scan(&value); err != nil {
+		return nil, err
+	}
+	var ids []string
+	if err := json.Unmarshal([]byte(value), &ids); err != nil {
+		return nil, err
+	}
+	return systemchecks.NormalizeIDs(ids), nil
 }
 
 func (s *Server) handleWebAccess(w http.ResponseWriter, r *http.Request) {

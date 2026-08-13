@@ -2,6 +2,7 @@ package deploy
 
 import (
 	"archive/tar"
+	"bytes"
 	"compress/gzip"
 	"context"
 	"crypto/rand"
@@ -10,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path"
 	"path/filepath"
 	"strings"
@@ -106,9 +108,8 @@ func (r *Runner) DeployGitHubRef(ctx context.Context, site sites.Site, ref strin
 	if site.Repository.GitHubInstallationID == nil || site.Repository.GitHubFullName == "" {
 		return Result{}, fmt.Errorf("site %q has incomplete GitHub repository metadata", site.ID)
 	}
-	currentPath := filepath.Join(site.ProjectRoot, "current")
-	if filepath.Clean(site.WebRoot) != filepath.Clean(currentPath) {
-		return Result{}, fmt.Errorf("atomic deployment requires document root %q", currentPath)
+	if filepath.Clean(site.WebRoot) == filepath.Clean(site.ProjectRoot) {
+		return Result{}, fmt.Errorf("atomic deployment requires a document root below the project root, such as %q", filepath.Join(site.ProjectRoot, "current"))
 	}
 	if err := os.MkdirAll(site.ProjectRoot, 0o755); err != nil {
 		return Result{}, fmt.Errorf("create project root: %w", err)
@@ -204,19 +205,64 @@ func (r *Runner) DeployGitHubRef(ctx context.Context, site sites.Site, ref strin
 		return Result{}, err
 	}
 
-	nextPath := currentPath + ".next-" + releaseID
-	if err := os.Symlink(filepath.Join(".zion", "releases", releaseID), nextPath); err != nil {
-		return Result{}, fmt.Errorf("prepare atomic switch: %w", err)
+	currentStagingPath := filepath.Join(site.ProjectRoot, ".current")
+	nextStagingPath := currentStagingPath + ".next-" + releaseID
+	if err := os.Symlink(filepath.Join(".zion", "releases", releaseID), nextStagingPath); err != nil {
+		return Result{}, fmt.Errorf("prepare current staging link: %w", err)
 	}
-	if err := replaceSymlink(nextPath, currentPath); err != nil {
-		return Result{}, fmt.Errorf("activate release: %w", err)
+	if err := replaceSymlink(nextStagingPath, currentStagingPath); err != nil {
+		return Result{}, fmt.Errorf("activate current staging link: %w", err)
 	}
-	logs.add("deployment", "Activated release "+releaseID)
+	logs.add("deployment", "Prepared .current from "+releaseID)
+	if err := runDeploymentScript(ctx, site, releasePath, currentStagingPath, deploymentID, releaseID, commit.SHA, logs); err != nil {
+		return Result{}, err
+	}
+	logs.add("deployment", "Copied .current into "+site.WebRoot)
 	if err := r.activateRelease(ctx, site.ID, releaseID); err != nil {
 		return Result{}, err
 	}
 	failed = false
 	return Result{DeploymentID: deploymentID, ReleaseID: releaseID, ReleasePath: releasePath, Commit: commit.SHA, Status: "deployed"}, nil
+}
+
+func runDeploymentScript(ctx context.Context, site sites.Site, releasePath, currentPath, deploymentID, releaseID, commitSHA string, logs *deploymentLogs) error {
+	script := sites.EffectiveDeployScript(site.Strategy, site.DeployScript)
+	if strings.TrimSpace(script) == "" {
+		return fmt.Errorf("site %q has no deployment script", site.ID)
+	}
+	scriptKind := "custom"
+	if strings.TrimSpace(script) == strings.TrimSpace(sites.DefaultAtomicDeployScript) {
+		scriptKind = "default"
+	}
+	logs.add("build", "Using "+scriptKind+" deployment script")
+	command := exec.CommandContext(ctx, "/bin/sh", "-c", script)
+	command.Dir = releasePath
+	command.Env = append(os.Environ(),
+		"PROJECT_ROOT="+site.ProjectRoot,
+		"WEB_ROOT="+site.WebRoot,
+		"CURRENT_DIR="+currentPath,
+		"RELEASE_DIR="+releasePath,
+		"RELEASE_ID="+releaseID,
+		"DEPLOYMENT_ID="+deploymentID,
+		"COMMIT_SHA="+commitSHA,
+	)
+	var output bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &output
+	if err := command.Run(); err != nil {
+		if text := strings.TrimSpace(output.String()); text != "" {
+			for _, line := range strings.Split(text, "\n") {
+				logs.add("deployment", line)
+			}
+		}
+		return fmt.Errorf("deployment script failed: %w", err)
+	}
+	if text := strings.TrimSpace(output.String()); text != "" {
+		for _, line := range strings.Split(text, "\n") {
+			logs.add("deployment", line)
+		}
+	}
+	return nil
 }
 
 func (r *Runner) createDeployment(ctx context.Context, id, siteID, branch string, commit githubconnector.Commit) error {

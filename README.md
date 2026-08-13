@@ -83,7 +83,9 @@ Pentru conexiunea GitHub managed:
 
 Pentru site-uri noi sau importate, configurează repository-ul în tabul **Repository**. În **Overview**, commiturile sunt încărcate automat după prima deschidere și sunt marcate în funcție de deployment history. Ordinea taburilor este **Overview**, **Deployments**, **Repository**, **Settings**.
 
-Atomic deployment folosește structura /project-root/.zion/releases/<release-id> și activează release-ul prin project-root/current. Web Station trebuie să aibă document root-ul configurat la current; astfel site-ul servește release-ul activ fără să schimbe manual configurația serverului. În implementarea actuală, scripturile Composer/npm/migrations configurate în Settings sunt salvate pentru pipeline-ul următor și nu sunt încă executate automat.
+Atomic deployment folosește structura /project-root/.zion/releases/<release-id>, pregătește un link /project-root/.current către release și execută scriptul din Settings. Pentru site-urile noi și cele existente care trec pe strategia Atomic, scriptul implicit copiază conținutul din `.current` într-un director temporar lângă document root și îl activează prin rename atomic. Poți edita scriptul și adăuga Composer, migrations, npm sau health checks proprii; scriptul este executat de utilizatorul pachetului, nu ca root. Web Station trebuie să aibă document root-ul setat la calea `Web directory` a site-ului.
+
+În **Settings → Deployment toolchain checks** poți bifa tool-urile pe care vrei să le vezi în **System Overview**. Verificarea este live și caută binarele în PATH-urile uzuale DSM. Pentru PHP/Node.js/Git/MariaDB client, folosește Package Center când există pachetul; pentru Composer verifică runtime-ul PHP și rulează `composer --version`. Pentru fiecare card roșu, deschide **Read more** din System Overview: articolul include comanda de verificare și pașii de instalare/remediere.
 
 Interfața web folosește iconița pachetului DSM ca favicon prin /webman/3rdparty/zion-releasestation/images/app_64.png. Dacă browserul păstrează vechea cerere /favicon.ico, fă un hard refresh după instalarea noului SPK.
 
@@ -120,8 +122,9 @@ Pentru atomic deployment, site-ul rulează în continuare release-ul curent pân
 
 ```text
 /volume1/www/example/
-├── current -> releases/<release-id>
-├── releases/
+├── .current -> .zion/releases/<release-id>
+├── current/                 # Web Station document root
+├── .zion/releases/
 └── shared/
     ├── .env
     └── storage/

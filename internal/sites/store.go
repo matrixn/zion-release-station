@@ -87,6 +87,47 @@ type Store struct {
 	db *sql.DB
 }
 
+// DefaultAtomicDeployScript is intentionally small and reviewable. It copies the
+// prepared .current release into a temporary document-root directory and then
+// swaps that directory into place with a same-filesystem rename.
+const DefaultAtomicDeployScript = `#!/bin/sh
+set -eu
+
+SOURCE_DIR="${CURRENT_DIR:-${PROJECT_ROOT}/.current}"
+TARGET_DIR="${WEB_ROOT:?WEB_ROOT is required}"
+RELEASE_ID="${RELEASE_ID:-manual}"
+TARGET_PARENT=$(dirname "$TARGET_DIR")
+TARGET_NAME=$(basename "$TARGET_DIR")
+STAGING_DIR="${TARGET_PARENT}/.${TARGET_NAME}.staging-${RELEASE_ID}"
+BACKUP_DIR="${TARGET_PARENT}/.${TARGET_NAME}.previous-${RELEASE_ID}"
+
+cleanup() {
+    if [ ! -e "$TARGET_DIR" ] && [ -e "$BACKUP_DIR" ]; then
+        mv "$BACKUP_DIR" "$TARGET_DIR"
+    fi
+    rm -rf "$STAGING_DIR"
+}
+trap cleanup EXIT
+
+rm -rf "$STAGING_DIR"
+mkdir -p "$STAGING_DIR"
+cp -a "$SOURCE_DIR"/. "$STAGING_DIR"/
+rm -rf "$BACKUP_DIR"
+if [ -e "$TARGET_DIR" ] || [ -L "$TARGET_DIR" ]; then
+    mv "$TARGET_DIR" "$BACKUP_DIR"
+fi
+mv "$STAGING_DIR" "$TARGET_DIR"
+rm -rf "$BACKUP_DIR"
+trap - EXIT
+`
+
+func EffectiveDeployScript(strategy, script string) string {
+	if strategy == "atomic" && strings.TrimSpace(script) == "" {
+		return DefaultAtomicDeployScript
+	}
+	return strings.TrimSpace(script)
+}
+
 func NewStore(db *sql.DB) *Store {
 	return &Store{db: db}
 }
@@ -107,6 +148,7 @@ func (s *Store) List(ctx context.Context) ([]Site, error) {
 		if runtime != "" {
 			site.Runtime = json.RawMessage(runtime)
 		}
+		site.DeployScript = EffectiveDeployScript(site.Strategy, site.DeployScript)
 		site.PushToDeploy = push != 0
 		_ = json.Unmarshal([]byte(tags), &site.Tags)
 		result = append(result, site)
@@ -140,6 +182,7 @@ func (s *Store) Get(ctx context.Context, id string) (Site, error) {
 	if runtime != "" {
 		site.Runtime = json.RawMessage(runtime)
 	}
+	site.DeployScript = EffectiveDeployScript(site.Strategy, site.DeployScript)
 	site.PushToDeploy = push != 0
 	_ = json.Unmarshal([]byte(tags), &site.Tags)
 	if err := s.attachRepository(ctx, &site); err != nil {
@@ -181,7 +224,7 @@ func (s *Store) Create(ctx context.Context, input Input) (Site, error) {
 	if retention == 0 {
 		retention = 4
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO sites(id, name, slug, hostname, project_root, web_root, framework, custom_framework, strategy, status, runtime_json, tags_json, color, push_to_deploy, deploy_script, deployment_retention, created_at, updated_at) VALUES (?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''), ?, NULLIF(?, ''), ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?)`, id, input.Name, input.Slug, input.Hostname, input.ProjectRoot, input.WebRoot, input.Framework, input.CustomFramework, input.Strategy, input.Status, runtime, string(tags), normalizeColor(input.Color), boolInt(input.PushToDeploy), strings.TrimSpace(input.DeployScript), retention, now, now)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO sites(id, name, slug, hostname, project_root, web_root, framework, custom_framework, strategy, status, runtime_json, tags_json, color, push_to_deploy, deploy_script, deployment_retention, created_at, updated_at) VALUES (?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''), ?, NULLIF(?, ''), ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?)`, id, input.Name, input.Slug, input.Hostname, input.ProjectRoot, input.WebRoot, input.Framework, input.CustomFramework, input.Strategy, input.Status, runtime, string(tags), normalizeColor(input.Color), boolInt(input.PushToDeploy), EffectiveDeployScript(input.Strategy, input.DeployScript), retention, now, now)
 	if err != nil {
 		return Site{}, fmt.Errorf("create site: %w", err)
 	}
@@ -206,7 +249,7 @@ func (s *Store) Update(ctx context.Context, id string, input Input) (Site, error
 	if err != nil {
 		return Site{}, fmt.Errorf("encode site tags: %w", err)
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE sites SET name = ?, slug = ?, hostname = NULLIF(?, ''), project_root = ?, web_root = NULLIF(?, ''), framework = ?, custom_framework = NULLIF(?, ''), strategy = ?, status = ?, runtime_json = NULLIF(?, ''), tags_json = ?, color = ?, push_to_deploy = ?, deploy_script = ?, deployment_retention = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL`, input.Name, input.Slug, input.Hostname, input.ProjectRoot, input.WebRoot, input.Framework, input.CustomFramework, input.Strategy, input.Status, runtime, string(tags), normalizeColor(input.Color), boolInt(input.PushToDeploy), strings.TrimSpace(input.DeployScript), input.DeploymentRetention, time.Now().UTC().Format(time.RFC3339Nano), id)
+	result, err := s.db.ExecContext(ctx, `UPDATE sites SET name = ?, slug = ?, hostname = NULLIF(?, ''), project_root = ?, web_root = NULLIF(?, ''), framework = ?, custom_framework = NULLIF(?, ''), strategy = ?, status = ?, runtime_json = NULLIF(?, ''), tags_json = ?, color = ?, push_to_deploy = ?, deploy_script = ?, deployment_retention = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL`, input.Name, input.Slug, input.Hostname, input.ProjectRoot, input.WebRoot, input.Framework, input.CustomFramework, input.Strategy, input.Status, runtime, string(tags), normalizeColor(input.Color), boolInt(input.PushToDeploy), EffectiveDeployScript(input.Strategy, input.DeployScript), input.DeploymentRetention, time.Now().UTC().Format(time.RFC3339Nano), id)
 	if err != nil {
 		return Site{}, fmt.Errorf("update site: %w", err)
 	}
@@ -290,6 +333,9 @@ func validateInput(input Input) error {
 	}
 	if input.DeploymentRetention < 0 || input.DeploymentRetention > 100 {
 		return fmt.Errorf("deployment retention must be between 0 and 100")
+	}
+	if len(input.DeployScript) > 64*1024 {
+		return fmt.Errorf("deployment script must be at most 64 KB")
 	}
 	if input.Repository != nil {
 		if err := validateRepository(*input.Repository); err != nil {

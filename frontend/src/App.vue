@@ -205,9 +205,15 @@ type DashboardMetrics = {
   running_deploys: number;
   queue_status: string;
   latest?: { site_id: string; site_name: string; status: string; branch: string; commit_sha: string; commit_message: string; created_at: string; duration_ms: number };
-  services: { label: string; state: string; detail: string }[];
+  services: { id: string; label: string; state: string; detail: string; command?: string; description?: string; install_hint?: string; version?: string }[];
 };
 const dashboardMetrics = ref<DashboardMetrics>({ successful_deploys: 0, total_deploys: 0, median_duration_ms: 0, running_deploys: 0, queue_status: 'idle', services: [] });
+type SystemCheckSetting = { id: string; label: string; command: string; description: string; install_hint: string; enabled: boolean };
+const systemChecks = ref<SystemCheckSetting[]>([]);
+const systemChecksLoading = ref(false);
+const systemChecksSaving = ref(false);
+const systemChecksMessage = ref('');
+const systemChecksError = ref('');
 watch(activeNav, (value) => {
   try { localStorage.setItem(navigationStorageKey, value); } catch { /* localStorage is optional */ }
 });
@@ -277,8 +283,8 @@ const navItems = computed(() => [
   { label: 'Activity', icon: Activity },
 ]);
 
-const systemIcons = [Globe2, GitBranch, Zap, Database];
-const systemItems = computed(() => dashboardMetrics.value.services.map((service, index) => ({ ...service, icon: systemIcons[index] || Activity })));
+const systemIcons: Record<string, any> = { webstation: Globe2, github_connector: GitBranch, sqlite: Database, php: Code2, composer: PackageCheck, node: ServerCog, npm: Hammer, git: Zap, rsync: ArrowDownToLine, unzip: Box, tar: PackageCheck, curl: Globe2, mysql: Database };
+const systemItems = computed(() => dashboardMetrics.value.services.map((service) => ({ ...service, icon: systemIcons[service.id] || Activity })));
 const helpTopic = ref('intro');
 const helpArticles: Record<string, { title: string; summary: string; steps: string[] }> = {
   'Web Station': {
@@ -302,6 +308,22 @@ const helpArticles: Record<string, { title: string; summary: string; steps: stri
     steps: ['Verifică în Package Health că serviciul local este healthy.', 'Nu șterge fișierul bazei de date din directorul pachetului.', 'Dacă baza este blocată, oprește și pornește pachetul din Package Center înainte de a repeta operația.'],
   },
 };
+function systemItem(topic: string) {
+  return systemItems.value.find((item) => item.label === topic);
+}
+
+function helpSteps(topic: string) {
+  const article = helpArticles[topic];
+  if (article?.steps?.length) return article.steps;
+  const item = systemItem(topic);
+  if (!item) return ['Revino pe Dashboard și apasă Refresh pentru o verificare live.'];
+  return [
+    `Pe Synology, verifică mai întâi în Package Center dacă este instalat ${item.label}.`,
+    item.install_hint || `Conectează-te prin SSH și verifică binarul cu: ${item.command} --version`,
+    'Dacă instalarea este făcută, verifică PATH-ul utilizatorului serviciului și apasă Refresh în System Overview.',
+  ];
+}
+
 function openHelp(topic = 'intro') {
   helpTopic.value = topic;
   activeNav.value = 'Help';
@@ -433,6 +455,38 @@ async function loadDashboardMetrics() {
     dashboardMetrics.value = payload.data || dashboardMetrics.value;
   } catch {
     // Keep the last known values visible when a single polling request fails.
+  }
+}
+
+async function loadSystemChecks() {
+  systemChecksLoading.value = true;
+  try {
+    const response = await fetch('/releasestation/api/v1/system/checks', { headers: { Accept: 'application/json' } });
+    if (!response.ok) throw new Error('checks');
+    const payload = await response.json();
+    systemChecks.value = payload.data?.checks || [];
+  } catch {
+    systemChecksError.value = 'Nu am putut încărca verificările configurabile.';
+  } finally {
+    systemChecksLoading.value = false;
+  }
+}
+
+async function saveSystemChecks() {
+  systemChecksSaving.value = true;
+  systemChecksMessage.value = '';
+  systemChecksError.value = '';
+  try {
+    const enabled = systemChecks.value.filter((check) => check.enabled).map((check) => check.id);
+    const response = await fetch('/releasestation/api/v1/system/checks', { method: 'PUT', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ enabled }) });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut salva verificările.');
+    await loadDashboardMetrics();
+    systemChecksMessage.value = 'Verificările System Overview au fost salvate și reîmprospătate.';
+  } catch (error) {
+    systemChecksError.value = error instanceof Error ? error.message : 'Nu am putut salva verificările.';
+  } finally {
+    systemChecksSaving.value = false;
   }
 }
 
@@ -1132,6 +1186,7 @@ onMounted(() => {
   checkHealth();
   loadSites();
   loadDashboardMetrics();
+  loadSystemChecks();
   loadWebStationStatus();
   loadGithubStatus();
   dashboardRefreshTimer = setInterval(() => {
@@ -1374,6 +1429,14 @@ onBeforeUnmount(() => {
 
         <section v-if="activeNav === 'Settings'" class="settings-view">
           <div class="sites-management-header"><div><div class="eyebrow"><span class="eyebrow-pulse" /> WORKSPACE SETTINGS</div><h1>Settings.</h1><p class="hero-copy">Connect the services ReleaseStation uses to discover repositories and deploy sites.</p></div></div>
+          <article class="panel settings-card system-checks-card">
+            <div class="settings-card-heading"><span class="settings-icon"><ServerCog :size="18" /></span><div><div class="panel-kicker">SYSTEM OVERVIEW</div><h2>Deployment toolchain checks</h2><p>Selectează ce vrei să verifici live pe NAS și să afișezi în Dashboard. O verificare roșie înseamnă că binarul nu a fost găsit de serviciul Release Station.</p></div></div>
+            <div v-if="systemChecksLoading && !systemChecks.length" class="management-empty"><RotateCw :size="18" class="spin" /><span>Loading available checks…</span></div>
+            <div v-else class="system-check-settings-grid"><label v-for="check in systemChecks" :key="check.id" class="system-check-setting"><input v-model="check.enabled" type="checkbox" /><span><strong>{{ check.label }}</strong><small>{{ check.description }}</small><code>{{ check.command }}</code></span></label></div>
+            <div v-if="systemChecksError" class="discovery-error"><CircleAlert :size="16" />{{ systemChecksError }}</div><div v-if="systemChecksMessage" class="discovery-success"><Check :size="16" />{{ systemChecksMessage }}</div>
+            <div class="settings-actions"><span class="muted-copy">{{ systemChecks.filter((check) => check.enabled).length }} active checks</span><button class="button button-primary" type="button" :disabled="systemChecksSaving || systemChecksLoading" @click="saveSystemChecks">{{ systemChecksSaving ? 'Saving…' : 'Save checks' }} <Check :size="14" /></button></div>
+            <div class="settings-note"><CircleHelp :size="15" /><span>Instalează tool-urile din Package Center când există pachet DSM. Pentru verificarea exactă, folosește SSH și comenzile afișate în articolul Read more al fiecărui card.</span></div>
+          </article>
           <article v-if="githubState.mode === 'managed'" class="panel settings-card">
             <div class="settings-card-heading"><span class="settings-icon"><GitBranch :size="18" /></span><div><div class="panel-kicker">SOURCE CONTROL CONNECTOR</div><h2>GitHub</h2><p>Conectează GitHub fără să creezi o aplicație proprie și fără să încarci cheia PEM pe NAS.</p></div><span class="connection-badge" :class="{ connected: githubState.connected }"><span class="status-dot" />{{ githubState.connected ? 'Connected' : 'Not connected' }}</span></div>
             <div class="settings-form"><div class="connector-status"><span class="status-dot" :class="{ 'status-dot-warning': !githubState.connected }" /><strong>{{ githubState.connected ? 'GitHub connected through Synology Connector' : 'Connect GitHub to continue' }}</strong><small v-if="githubState.account_login">Account: {{ githubState.account_login }}</small><small v-else-if="githubState.configuration_error">{{ githubState.configuration_error }}</small></div><p class="settings-explanation">Apasă butonul, autentifică-te pe GitHub și instalează aplicația „Synology Connector” în contul sau organizația ta. Selectezi exact repository-urile private accesibile. Cheia GitHub App rămâne în serviciul connectorului, nu pe NAS.</p></div>
@@ -1396,8 +1459,8 @@ onBeforeUnmount(() => {
           <div class="sites-management-header"><div><div class="eyebrow"><span class="eyebrow-pulse" /> DOCUMENTATION</div><h1>Help center.</h1><p class="hero-copy">Un ghid scurt pentru configurarea Release Station și remedierea verificărilor roșii din System Overview.</p></div><div class="hero-actions"><button class="button button-secondary" type="button" @click="activeNav = 'Dashboard'"><LayoutDashboard :size="15" />Back to dashboard</button></div></div>
           <div class="help-layout">
             <aside class="panel help-navigation"><button type="button" :class="{ active: helpTopic === 'intro' }" @click="helpTopic = 'intro'"><LifeBuoy :size="15" />Getting started</button><div class="help-nav-label">SYSTEM OVERVIEW</div><button v-for="item in systemItems" :key="item.label" type="button" :class="{ active: helpTopic === item.label }" @click="helpTopic = item.label"><component :is="item.icon" :size="15" />{{ item.label }}<span class="help-nav-state" :class="item.state">{{ item.state === 'ready' ? 'OK' : 'FIX' }}</span></button></aside>
-            <article v-if="helpTopic === 'intro'" class="panel help-article"><div class="panel-kicker">ZION RELEASE STATION</div><h2>Deploy sites from Synology with confidence</h2><p>Release Station descoperă site-uri Web Station, le conectează la repository-uri GitHub și păstrează istoricul, starea release-urilor și logurile într-un singur control plane local.</p><div class="help-card-grid"><div><GitBranch :size="17" /><strong>Connect source control</strong><span>Conectează GitHub din Settings, aprobă repository-urile private, apoi selectează repository-ul și branch-ul pentru fiecare site.</span></div><div><Globe2 :size="17" /><strong>Configure a site</strong><span>Importă un site Web Station sau adaugă-l manual. Taburile Repository și Settings păstrează configurația deployment-ului.</span></div><div><UploadCloud :size="17" /><strong>Deploy and observe</strong><span>Alege Atomic releases pentru activare cu rollback, pornește deployment-ul și verifică logurile capturate.</span></div></div><div class="help-callout"><CircleHelp :size="16" /><span>Un card roșu din System Overview nu înseamnă că datele site-ului sunt pierdute. Deschide articolul lui din meniul din stânga pentru pașii de remediere.</span></div></article>
-            <article v-else class="panel help-article"><div class="panel-kicker">SYSTEM OVERVIEW / {{ helpTopic }}</div><h2>{{ helpArticles[helpTopic]?.title || helpTopic }}</h2><p>{{ helpArticles[helpTopic]?.summary || 'Verificarea acestui serviciu este furnizată de API-ul local.' }}</p><div class="help-status-line"><span class="status-dot" :class="{ 'status-dot-warning': systemItems.find((item) => item.label === helpTopic)?.state !== 'ready' }" /><strong>{{ systemItems.find((item) => item.label === helpTopic)?.state === 'ready' ? 'Verification passed' : 'Action required' }}</strong><span>{{ systemItems.find((item) => item.label === helpTopic)?.detail || 'No live detail available.' }}</span></div><h3>How to fix it</h3><ol class="help-steps"><li v-for="step in (helpArticles[helpTopic]?.steps || [])" :key="step">{{ step }}</li></ol><div class="help-callout"><CircleHelp :size="16" /><span>După remediere, revino pe Dashboard și apasă Refresh în System Overview pentru o verificare live.</span></div></article>
+            <article v-if="helpTopic === 'intro'" class="panel help-article"><div class="panel-kicker">ZION RELEASE STATION</div><h2>Deploy sites from Synology with confidence</h2><p>Release Station descoperă site-uri Web Station, le conectează la repository-uri GitHub și păstrează istoricul, starea release-urilor și logurile într-un singur control plane local.</p><div class="help-card-grid"><div><GitBranch :size="17" /><strong>Connect source control</strong><span>Conectează GitHub din Settings, aprobă repository-urile private, apoi selectează repository-ul și branch-ul pentru fiecare site.</span></div><div><Globe2 :size="17" /><strong>Configure a site</strong><span>Importă un site Web Station sau adaugă-l manual. Taburile Repository și Settings păstrează configurația deployment-ului.</span></div><div><UploadCloud :size="17" /><strong>Deploy and observe</strong><span>Alege Atomic releases pentru activare cu rollback, pornește deployment-ul și verifică logurile capturate.</span></div></div><div class="help-callout"><CircleHelp :size="16" /><span>Un card roșu din System Overview nu înseamnă că datele site-ului sunt pierdute. Deschide articolul lui din meniul din stânga pentru pașii de remediere.</span></div><div class="help-callout"><TerminalSquare :size="16" /><span>Atomic deploy pregătește release-ul, îl leagă în <code>.current</code>, apoi rulează scriptul din Settings. Scriptul implicit copiază conținutul în document root printr-un director temporar și rename atomic. Poți înlocui scriptul cu propriile comenzi Composer, migrations sau npm; verifică tool-urile necesare în Settings → Deployment toolchain checks.</span></div></article>
+            <article v-else class="panel help-article"><div class="panel-kicker">SYSTEM OVERVIEW / {{ helpTopic }}</div><h2>{{ helpArticles[helpTopic]?.title || helpTopic }}</h2><p>{{ helpArticles[helpTopic]?.summary || systemItem(helpTopic)?.description || 'Verificarea acestui serviciu este furnizată de API-ul local.' }}</p><div class="help-status-line"><span class="status-dot" :class="{ 'status-dot-warning': systemItem(helpTopic)?.state !== 'ready' }" /><strong>{{ systemItem(helpTopic)?.state === 'ready' ? 'Verification passed' : 'Action required' }}</strong><span>{{ systemItem(helpTopic)?.detail || 'No live detail available.' }}</span></div><h3>How to fix it</h3><ol class="help-steps"><li v-for="step in helpSteps(helpTopic)" :key="step">{{ step }}</li></ol><div class="help-callout"><CircleHelp :size="16" /><span>După remediere, revino pe Dashboard și apasă Refresh în System Overview pentru o verificare live.</span></div></article>
           </div>
         </section>
 
