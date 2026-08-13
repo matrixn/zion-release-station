@@ -9,18 +9,52 @@ use RuntimeException;
 
 final class HttpApp
 {
+    private readonly DebugLogger $debug;
+    private string $rawRequestBody = '';
+    private string $lastResponseBody = '';
+    private string $currentRequestId = '';
+
     public function __construct(
         private readonly Config $config,
         private readonly Database $database,
         private readonly GitHubClient $github,
+        ?DebugLogger $debug = null,
     ) {
+        $this->debug = $debug ?? new DebugLogger($database, false);
     }
 
     public function run(): void
     {
+        $started = microtime(true);
+        $this->currentRequestId = $this->debug->requestId();
+        $this->rawRequestBody = file_get_contents('php://input') ?: '';
         try {
             $method = strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET');
-            $path = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH) ?: '/';
+            $requestUri = $_SERVER['REQUEST_URI'] ?? '/';
+            $path = parse_url($requestUri, PHP_URL_PATH) ?: '/';
+
+            if (str_starts_with($path, '/admin')) {
+                if (!$this->config->debug) {
+                    http_response_code(404);
+                    $this->lastResponseBody = 'Not found.';
+                    return;
+                }
+                if ($method === 'GET' && $path === '/admin') {
+                    $this->adminPage();
+                    return;
+                }
+                if ($path === '/admin/api/logs' && $method === 'GET') {
+                    $this->adminLogs();
+                    return;
+                }
+                if ($path === '/admin/api/logs' && $method === 'DELETE') {
+                    $this->database->clearDebugLogs();
+                    $this->json(204, []);
+                    return;
+                }
+                $this->json(404, ['error' => ['code' => 'NOT_FOUND', 'message' => 'Admin endpoint not found.']]);
+                return;
+            }
 
             if ($method === 'GET' && $path === '/') {
                 $this->json(200, [
@@ -115,7 +149,47 @@ final class HttpApp
             error_log('Zion Connector request failed: ' . $exception->getMessage());
             $message = $this->config->debug ? $exception->getMessage() : 'The connector could not complete the request.';
             $this->json(500, ['error' => ['code' => 'INTERNAL_ERROR', 'message' => $message]]);
+        } finally {
+            $loggedPath = parse_url((string) ($_SERVER['REQUEST_URI'] ?? '/'), PHP_URL_PATH) ?: '/';
+            if ($this->debug->enabled() && !str_starts_with($loggedPath, '/admin')) {
+                $this->debug->logInbound(
+                    $this->currentRequestId,
+                    strtoupper($_SERVER['REQUEST_METHOD'] ?? 'GET'),
+                    (string) ($_SERVER['REQUEST_URI'] ?? '/'),
+                    $this->debug->serverHeaders($_SERVER),
+                    $this->rawRequestBody,
+                    http_response_code() ?: 200,
+                    header_list(),
+                    $this->lastResponseBody,
+                    (int) round((microtime(true) - $started) * 1000),
+                );
+            }
         }
+    }
+
+    private function adminPage(): void
+    {
+        http_response_code(200);
+        header('Content-Type: text/html; charset=utf-8');
+        header('Cache-Control: no-store');
+        $this->lastResponseBody = AdminConsole::render();
+        echo $this->lastResponseBody;
+    }
+
+    private function adminLogs(): void
+    {
+        $page = filter_var($_GET['page'] ?? 1, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]) ?: 1;
+        $perPage = filter_var($_GET['per_page'] ?? 50, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1, 'max_range' => 100]]) ?: 50;
+        $status = trim((string) ($_GET['status'] ?? ''));
+        $filters = [
+            'q' => trim((string) ($_GET['q'] ?? '')),
+            'direction' => trim((string) ($_GET['direction'] ?? '')),
+            'source' => trim((string) ($_GET['source'] ?? '')),
+            'method' => strtoupper(trim((string) ($_GET['method'] ?? ''))),
+            'status' => $status,
+        ];
+        $result = $this->database->debugLogs($filters, $page, $perPage);
+        $this->json(200, ['data' => $result + ['page' => $page, 'per_page' => $perPage]]);
     }
 
     private function provisionInstance(): void
@@ -357,7 +431,7 @@ final class HttpApp
             $this->json(503, ['error' => ['code' => 'WEBHOOK_NOT_CONFIGURED', 'message' => 'CONNECTOR_GITHUB_WEBHOOK_SECRET is not configured.']]);
             return;
         }
-        $rawBody = file_get_contents('php://input') ?: '';
+        $rawBody = $this->rawRequestBody;
         $signature = trim((string) ($_SERVER['HTTP_X_HUB_SIGNATURE_256'] ?? ''));
         $expected = 'sha256=' . hash_hmac('sha256', $rawBody, $this->config->githubWebhookSecret);
         if ($signature === '' || !hash_equals($expected, $signature)) {
@@ -512,13 +586,14 @@ final class HttpApp
         header('Content-Type: application/gzip');
         header('Cache-Control: no-store');
         header('Content-Length: ' . strlen($archive));
+        $this->lastResponseBody = '[binary response omitted; bytes=' . strlen($archive) . ']';
         echo $archive;
     }
 
     /** @return array<string,mixed> */
     private function requestBody(): array
     {
-        $decoded = json_decode(file_get_contents('php://input') ?: '{}', true, 512, JSON_THROW_ON_ERROR);
+        $decoded = json_decode($this->rawRequestBody !== '' ? $this->rawRequestBody : '{}', true, 512, JSON_THROW_ON_ERROR);
         if (!is_array($decoded)) {
             throw new JsonException('Request body must be an object.');
         }
@@ -561,7 +636,8 @@ final class HttpApp
         http_response_code($status);
         header('Content-Type: application/json; charset=utf-8');
         header('Cache-Control: no-store');
-        echo json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        $this->lastResponseBody = json_encode($payload, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES | JSON_PRETTY_PRINT);
+        echo $this->lastResponseBody;
     }
 
     private static function randomToken(int $bytes): string

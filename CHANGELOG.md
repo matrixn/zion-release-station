@@ -4,6 +4,9 @@ Istoricul de mai jos păstrează evoluția proiectului și explică problema sau
 
 ## Unreleased
 
+- **Zion Connector Debug Console** — când `APP_DEBUG=1`, connectorul expune `/admin` cu filtrare, auto-refresh, expand pe rând și code coloring pentru headers/body. Sunt urmărite requesturile inbound de la Synology și GitHub, răspunsurile connectorului și requesturile outbound către GitHub, cu metode, statusuri și durate.
+- **Debug safety** — logurile sunt persistente în MariaDB/SQLite, body-urile sunt limitate la 128 KiB, arhivele binare sunt omise, iar Authorization, cookies, token-uri, parole, secrets, private keys și pairing codes sunt redactate. Cu `APP_DEBUG=0`, consola și API-ul admin sunt dezactivate prin `404`.
+
 - **Milestone 4 — Deployment Engine** — deployment-urile manuale și webhook sunt persistate mai întâi ca `queued`, apoi executate de worker-e cu lock per site și recovery la restart. Commiturile active sunt deduplicate, iar erorile de infrastructură sau de executor sunt înregistrate ca `failed` fără să lase job-uri blocate.
 - **Pipeline și observabilitate** — fiecare deployment păstrează pașii `fetch`, `extract` și `publish`, durata, statusul și logurile build/deployment. Executorul transmite liniile scriptului în timp real prin SSE; interfața poate urmări coada, pașii și logurile fără input remote shell.
 - **Dashboard live** — queue status separă deployment-urile `queued` de cele `running`, iar istoricul și median deploy time folosesc datele persistente reale. Manual Deploy răspunde cu `202 Accepted` și urmărește deployment-ul până la `deployed` sau `failed`.

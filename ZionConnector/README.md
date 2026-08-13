@@ -20,6 +20,20 @@ php -S 127.0.0.1:8787 -t public public/index.php
 
 În producție, rulează `public/index.php` prin Apache 2.4 și PHP-FPM și expune numai portalul HTTPS. Setează `CONNECTOR_DB_DRIVER=mysql` și variabilele `CONNECTOR_DB_*`; schema este creată automat în MariaDB cu InnoDB și utf8mb4.
 
+## Admin Debug Console
+
+Consola de depanare este disponibilă numai când `APP_DEBUG=1` în `.env` și se deschide la:
+
+```text
+https://connector.example.com/admin
+```
+
+Nu are parolă momentan, de aceea nu activa `APP_DEBUG` pe un connector expus public decât temporar și ideal numai în timpul depanării. Când `APP_DEBUG=0` sau variabila lipsește, `/admin` și `/admin/api/logs` răspund cu `404`.
+
+Consola persistă și filtrează comunicațiile inbound/outbound pentru Synology și GitHub: metoda HTTP, URL-ul, statusul, durata, headers, body-ul requestului și body-ul response-ului. Click pe un rând deschide detaliile sub rând; JSON-ul este formatat și colorat în interfață. Logurile se actualizează automat la 3 secunde și pot fi șterse din butonul **Clear logs**.
+
+Pentru siguranță, `Authorization`, cookies, signatures, tokens, parole, client secrets, private keys și pairing codes sunt redactate înainte de salvare. Body-urile sunt limitate la 128 KiB; arhivele binare nu sunt stocate, ci apar ca metadata cu dimensiunea răspunsului. După depanare, revino la `APP_DEBUG=0` și repornește/reîncarcă serviciul Apache/PHP-FPM.
+
 `.htaccess` din root este protecția fallback pentru cazul în care document root-ul este configurat greșit. Routing-ul Apache 2.4 principal este în `public/.htaccess`.
 
 ## Configurare Apache 2.4 în Web Station

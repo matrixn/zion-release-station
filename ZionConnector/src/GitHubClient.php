@@ -8,7 +8,10 @@ use RuntimeException;
 
 final class GitHubClient
 {
-    public function __construct(private readonly Config $config)
+    public function __construct(
+        private readonly Config $config,
+        private readonly ?DebugLogger $debug = null,
+    )
     {
     }
 
@@ -230,6 +233,7 @@ final class GitHubClient
     /** @param array<string,mixed>|null $body @param list<string> $headers @return array<string,mixed> */
     private function request(string $method, string $url, ?array $body, array $headers): array
     {
+        $requestId = $this->debug?->requestId() ?? '';
         $handle = curl_init($url);
         if ($handle === false) {
             throw new RuntimeException('Unable to initialize the GitHub HTTP client.');
@@ -243,15 +247,23 @@ final class GitHubClient
             CURLOPT_HTTPHEADER => $requestHeaders,
             CURLOPT_CUSTOMREQUEST => $method,
         ];
+        $requestBody = null;
         if ($body !== null) {
-            $options[CURLOPT_POSTFIELDS] = http_build_query($body, '', '&', PHP_QUERY_RFC3986);
+            $requestBody = http_build_query($body, '', '&', PHP_QUERY_RFC3986);
+            $options[CURLOPT_POSTFIELDS] = $requestBody;
             $options[CURLOPT_HTTPHEADER][] = 'Content-Type: application/x-www-form-urlencoded';
         }
+        $options[CURLOPT_HEADER] = true;
+        $started = microtime(true);
         curl_setopt_array($handle, $options);
-        $response = curl_exec($handle);
+        $rawResponse = curl_exec($handle);
         $status = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+        $headerSize = (int) curl_getinfo($handle, CURLINFO_HEADER_SIZE);
         $error = curl_error($handle);
         curl_close($handle);
+        $responseHeaders = $rawResponse === false ? [] : $this->headerLines(substr($rawResponse, 0, $headerSize));
+        $response = $rawResponse === false ? false : substr($rawResponse, $headerSize);
+        $this->debug?->logOutbound($requestId, $method, $url, $options[CURLOPT_HTTPHEADER], $requestBody, $status, $responseHeaders, $response === false ? $error : $response, (int) round((microtime(true) - $started) * 1000));
         if ($response === false) {
             throw new RuntimeException('GitHub request failed: ' . $error);
         }
@@ -270,32 +282,46 @@ final class GitHubClient
     /** @param list<string> $headers */
     private function binaryRequest(string $method, string $url, array $headers): string
     {
+        $requestId = $this->debug?->requestId() ?? '';
         $handle = curl_init($url);
         if ($handle === false) {
             throw new RuntimeException('Unable to initialize the GitHub HTTP client.');
         }
+        $requestHeaders = array_merge(['User-Agent: ZionConnector/1.0', 'X-GitHub-Api-Version: 2022-11-28'], $headers);
         curl_setopt_array($handle, [
             CURLOPT_RETURNTRANSFER => true,
             CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_TIMEOUT => 120,
-            CURLOPT_HTTPHEADER => array_merge(['User-Agent: ZionConnector/1.0', 'X-GitHub-Api-Version: 2022-11-28'], $headers),
+            CURLOPT_HTTPHEADER => $requestHeaders,
             CURLOPT_CUSTOMREQUEST => $method,
+            CURLOPT_HEADER => true,
         ]);
+        $started = microtime(true);
         $response = curl_exec($handle);
         $status = (int) curl_getinfo($handle, CURLINFO_RESPONSE_CODE);
+        $headerSize = (int) curl_getinfo($handle, CURLINFO_HEADER_SIZE);
         $error = curl_error($handle);
         curl_close($handle);
+        $responseHeaders = $response === false ? [] : $this->headerLines(substr($response, 0, $headerSize));
+        $responseBody = $response === false ? null : substr($response, $headerSize);
+        $this->debug?->logOutbound($requestId, $method, $url, $requestHeaders, null, $status, $responseHeaders, null, (int) round((microtime(true) - $started) * 1000), 'github');
         if ($response === false) {
             throw new RuntimeException('GitHub archive request failed: ' . $error);
         }
         if ($status < 200 || $status >= 300) {
             throw new RuntimeException('GitHub archive request was rejected with HTTP ' . $status . '.');
         }
-        if (strlen($response) > 512 * 1024 * 1024) {
+        if (strlen((string) $responseBody) > 512 * 1024 * 1024) {
             throw new RuntimeException('GitHub archive exceeds the 512 MB safety limit.');
         }
-        return $response;
+        return (string) $responseBody;
+    }
+
+    /** @return list<string> */
+    private function headerLines(string $raw): array
+    {
+        return array_values(array_filter(preg_split('/\r\n|\n|\r/', $raw) ?: [], static fn (string $line): bool => trim($line) !== ''));
     }
 
     private static function base64Url(string $value): string

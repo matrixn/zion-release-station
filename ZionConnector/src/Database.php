@@ -111,6 +111,23 @@ final class Database
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_webhook_events_instance_id ON github_webhook_events(instance_id, id);
+            CREATE TABLE IF NOT EXISTS debug_logs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                request_id TEXT NOT NULL,
+                direction TEXT NOT NULL,
+                source TEXT NOT NULL,
+                method TEXT NOT NULL,
+                url TEXT NOT NULL,
+                status INTEGER NOT NULL DEFAULT 0,
+                request_headers_json TEXT NOT NULL,
+                request_body TEXT NOT NULL,
+                response_headers_json TEXT NOT NULL,
+                response_body TEXT NOT NULL,
+                duration_ms INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_debug_logs_created_at ON debug_logs(created_at DESC);
+            CREATE INDEX IF NOT EXISTS idx_debug_logs_request_id ON debug_logs(request_id);
         SQL);
     }
 
@@ -187,7 +204,93 @@ final class Database
                 CONSTRAINT fk_webhook_events_instance FOREIGN KEY (instance_id) REFERENCES connector_instances(id) ON DELETE CASCADE,
                 INDEX idx_webhook_events_instance_id (instance_id, id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            CREATE TABLE IF NOT EXISTS debug_logs (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                request_id VARCHAR(128) NOT NULL,
+                direction VARCHAR(32) NOT NULL,
+                source VARCHAR(64) NOT NULL,
+                method VARCHAR(16) NOT NULL,
+                url VARCHAR(2048) NOT NULL,
+                status INT NOT NULL DEFAULT 0,
+                request_headers_json LONGTEXT NOT NULL,
+                request_body LONGTEXT NOT NULL,
+                response_headers_json LONGTEXT NOT NULL,
+                response_body LONGTEXT NOT NULL,
+                duration_ms BIGINT NOT NULL DEFAULT 0,
+                created_at VARCHAR(32) NOT NULL,
+                INDEX idx_debug_logs_created_at (created_at),
+                INDEX idx_debug_logs_request_id (request_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         SQL);
+    }
+
+    /** @param array<string,mixed> $entry */
+    public function recordDebugLog(array $entry): int
+    {
+        $statement = $this->pdo->prepare(<<<'SQL'
+            INSERT INTO debug_logs (request_id, direction, source, method, url, status, request_headers_json, request_body, response_headers_json, response_body, duration_ms, created_at)
+            VALUES (:request_id, :direction, :source, :method, :url, :status, :request_headers_json, :request_body, :response_headers_json, :response_body, :duration_ms, :created_at)
+        SQL);
+        $statement->execute([
+            'request_id' => (string) ($entry['request_id'] ?? ''),
+            'direction' => (string) ($entry['direction'] ?? 'inbound'),
+            'source' => (string) ($entry['source'] ?? 'unknown'),
+            'method' => (string) ($entry['method'] ?? 'GET'),
+            'url' => (string) ($entry['url'] ?? ''),
+            'status' => (int) ($entry['status'] ?? 0),
+            'request_headers_json' => (string) ($entry['request_headers_json'] ?? '{}'),
+            'request_body' => (string) ($entry['request_body'] ?? ''),
+            'response_headers_json' => (string) ($entry['response_headers_json'] ?? '{}'),
+            'response_body' => (string) ($entry['response_body'] ?? ''),
+            'duration_ms' => (int) ($entry['duration_ms'] ?? 0),
+            'created_at' => (string) ($entry['created_at'] ?? gmdate('c')),
+        ]);
+        return (int) $this->pdo->lastInsertId();
+    }
+
+    /** @return array{items:list<array<string,mixed>>,total:int} */
+    public function debugLogs(array $filters, int $page = 1, int $perPage = 50): array
+    {
+        $page = max(1, $page);
+        $perPage = min(100, max(1, $perPage));
+        $where = [];
+        $parameters = [];
+        foreach (['direction', 'source', 'method'] as $field) {
+            $value = trim((string) ($filters[$field] ?? ''));
+            if ($value !== '') {
+                $where[] = $field . ' = :' . $field;
+                $parameters[$field] = $value;
+            }
+        }
+        $status = filter_var($filters['status'] ?? null, FILTER_VALIDATE_INT);
+        if ($status !== false && $status !== null) {
+            if (in_array($status, [2, 4, 5], true)) {
+                $where[] = 'status >= :status_min AND status < :status_max';
+                $parameters['status_min'] = $status * 100;
+                $parameters['status_max'] = ($status + 1) * 100;
+            } else {
+                $where[] = 'status = :status';
+                $parameters['status'] = $status;
+            }
+        }
+        $query = trim((string) ($filters['q'] ?? ''));
+        if ($query !== '') {
+            $where[] = '(request_id LIKE :query OR url LIKE :query OR request_body LIKE :query OR response_body LIKE :query)';
+            $parameters['query'] = '%' . $query . '%';
+        }
+        $clause = $where === [] ? '' : ' WHERE ' . implode(' AND ', $where);
+        $count = $this->pdo->prepare('SELECT COUNT(*) FROM debug_logs' . $clause);
+        $count->execute($parameters);
+        $total = (int) $count->fetchColumn();
+        $offset = ($page - 1) * $perPage;
+        $statement = $this->pdo->prepare('SELECT * FROM debug_logs' . $clause . ' ORDER BY id DESC LIMIT ' . $perPage . ' OFFSET ' . $offset);
+        $statement->execute($parameters);
+        return ['items' => $statement->fetchAll() ?: [], 'total' => $total];
+    }
+
+    public function clearDebugLogs(): void
+    {
+        $this->pdo->exec('DELETE FROM debug_logs');
     }
 
     /** @return array<string,mixed>|null */
