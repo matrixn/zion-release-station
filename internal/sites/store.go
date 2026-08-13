@@ -135,6 +135,36 @@ done
 if [ "$VISIBLE_ENTRY_COUNT" -eq 1 ] && [ -d "$VISIBLE_DIR" ]; then
 	CONTENT_DIR="$VISIBLE_DIR"
 fi
+
+if [ -f "$CONTENT_DIR/composer.json" ]; then
+	COMPOSER_BIN="${COMPOSER_BIN:-composer}"
+	echo "Using Composer binary: $COMPOSER_BIN"
+	if ! command -v "$COMPOSER_BIN" >/dev/null 2>&1; then
+		echo "composer.json detected, but Composer is not installed or is not available on PATH" >&2
+		exit 1
+	fi
+	echo "composer.json detected; installing PHP dependencies"
+	"$COMPOSER_BIN" --working-dir="$CONTENT_DIR" install --no-interaction --prefer-dist --optimize-autoloader
+
+	if COMPOSER_SCRIPTS=$("$COMPOSER_BIN" --no-ansi --working-dir="$CONTENT_DIR" run-script --list 2>&1); then
+		if printf '%s\n' "$COMPOSER_SCRIPTS" | awk '$1 == "test" { found = 1 } END { exit !found }'; then
+			echo "Running Composer test script"
+			"$COMPOSER_BIN" --working-dir="$CONTENT_DIR" run-script test --no-interaction
+		elif [ -x "$CONTENT_DIR/vendor/bin/phpunit" ]; then
+			echo "Running PHPUnit"
+			"$CONTENT_DIR/vendor/bin/phpunit"
+		elif [ -x "$CONTENT_DIR/vendor/bin/pest" ]; then
+			echo "Running Pest"
+			"$CONTENT_DIR/vendor/bin/pest"
+		else
+			echo "No Composer test script or PHPUnit/Pest runner found; skipping tests"
+		fi
+	else
+		echo "Unable to inspect Composer scripts" >&2
+		exit 1
+	fi
+fi
+
 cp -a "$CONTENT_DIR"/. "$STAGING_DIR"/
 if [ "$CONTENT_DIR" != "$SOURCE_DIR" ]; then
 	for ITEM in "$SOURCE_DIR"/.[!.]* "$SOURCE_DIR"/..?*; do
@@ -159,10 +189,10 @@ rm -rf "$STAGING_DIR"
 trap - EXIT
 `
 
-// Sites created before the document-root layout change may still have the
-// previous generated script persisted in SQLite. Treat that exact script as
-// the default so existing sites receive the corrected behavior without
-// overwriting custom administrator scripts.
+// Sites created before the document-root layout or Composer build changes may
+// still have a previously generated script persisted in SQLite. Recognise
+// those generated variants as the default so existing sites receive the
+// corrected behavior without overwriting custom administrator scripts.
 const legacyAtomicDeployScript = `#!/bin/sh
 set -eu
 
@@ -211,6 +241,15 @@ func isLegacyAtomicDeployScript(script string) bool {
 	normalized := strings.Join(strings.Fields(script), " ")
 	legacy := strings.Join(strings.Fields(legacyAtomicDeployScript), " ")
 	if normalized == legacy {
+		return true
+	}
+	// This is the previous generated copy-based default. It already flattened
+	// GitHub archive wrappers, but did not build Composer dependencies or run
+	// tests. Keep this signature narrow so a custom script is not replaced.
+	if strings.Contains(normalized, `STATE_DIR="${PROJECT_ROOT:?PROJECT_ROOT is required}/.zion"`) &&
+		strings.Contains(normalized, `STAGING_DIR="${STATE_DIR}/document-root-staging-${RELEASE_ID}"`) &&
+		strings.Contains(normalized, `cp -a "$CONTENT_DIR"/. "$STAGING_DIR"/`) &&
+		!strings.Contains(normalized, "composer") {
 		return true
 	}
 	return strings.Contains(normalized, `TARGET_PARENT=$(dirname "$TARGET_DIR")`) &&

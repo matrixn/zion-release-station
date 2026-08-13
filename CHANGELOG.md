@@ -4,6 +4,8 @@ Istoricul de mai jos păstrează evoluția proiectului și explică problema sau
 
 ## Unreleased
 
+- **Composer-aware atomic deployments** — the default Atomic deployment checks for `composer.json`, runs `composer install --no-interaction --prefer-dist --optimize-autoloader`, then runs the Composer `test` script when defined or falls back to an installed PHPUnit/Pest runner. A missing Composer executable fails the deployment clearly, and existing sites with previously generated default scripts are migrated automatically while custom scripts remain unchanged.
+
 - **Atomic wrapper-directory fix** — default deployment now ignores hidden repository metadata when detecting a single visible GitHub archive wrapper directory. Existing sites with the previously generated atomic script are migrated by signature at runtime, so the application files are published directly into the Web Station document root while useful root-level dotfiles are preserved.
 
 - **Zion Connector Debug Console** — când `APP_DEBUG=1`, connectorul expune `/admin` cu filtrare, auto-refresh, expand pe rând și code coloring pentru headers/body. Sunt urmărite requesturile inbound de la Synology și GitHub, răspunsurile connectorului și requesturile outbound către GitHub, cu metode, statusuri și durate.
