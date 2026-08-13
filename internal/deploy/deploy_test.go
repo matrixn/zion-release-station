@@ -114,6 +114,45 @@ func TestDeployGitHubRunsCustomScript(t *testing.T) {
 	}
 }
 
+func TestDefaultAtomicScriptPublishesSingleRepositoryDirectoryToDocumentRoot(t *testing.T) {
+	root := t.TempDir()
+	current := filepath.Join(root, ".current")
+	if err := os.MkdirAll(filepath.Join(current, "matrixn-sample-wordpress-plugin-9e5a26a"), 0o755); err != nil {
+		t.Fatalf("create prepared release: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(current, "matrixn-sample-wordpress-plugin-9e5a26a", "index.php"), []byte("<?php echo 'ready';"), 0o644); err != nil {
+		t.Fatalf("write prepared release: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".zion", "releases"), 0o700); err != nil {
+		t.Fatalf("create release state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "old.php"), []byte("old"), 0o644); err != nil {
+		t.Fatalf("write old document root: %v", err)
+	}
+
+	site := sites.Site{ID: "site_default", ProjectRoot: root, WebRoot: root, Strategy: "atomic"}
+	logs := newDeploymentLogs()
+	if err := runDeploymentScript(context.Background(), site, current, current, "dep_test", "rel_test", "sha", logs); err != nil {
+		t.Fatalf("run default deployment script: %v", err)
+	}
+	content, err := os.ReadFile(filepath.Join(root, "index.php"))
+	if err != nil || string(content) != "<?php echo 'ready';" {
+		t.Fatalf("expected application at document root, got %q (%v)", content, err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "matrixn-sample-wordpress-plugin-9e5a26a")); !os.IsNotExist(err) {
+		t.Fatalf("repository wrapper directory should not be published: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "old.php")); !os.IsNotExist(err) {
+		t.Fatalf("old document-root file should be replaced: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".current")); err != nil {
+		t.Fatalf("prepared .current directory was removed: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".zion")); err != nil {
+		t.Fatalf("release state was removed: %v", err)
+	}
+}
+
 func testArchive(t *testing.T, files map[string]string) []byte {
 	t.Helper()
 	var buffer bytes.Buffer

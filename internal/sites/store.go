@@ -87,10 +87,77 @@ type Store struct {
 	db *sql.DB
 }
 
-// DefaultAtomicDeployScript is intentionally small and reviewable. It copies the
-// prepared .current release into a temporary document-root directory and then
-// swaps that directory into place with a same-filesystem rename.
+// DefaultAtomicDeployScript keeps .current/.zion as ReleaseStation state and
+// publishes the prepared application directly into the configured document
+// root. This is deliberately copy-based because the document root also owns
+// ReleaseStation's local release metadata and cannot be renamed as a whole.
 const DefaultAtomicDeployScript = `#!/bin/sh
+set -eu
+
+SOURCE_DIR="${CURRENT_DIR:-${PROJECT_ROOT}/.current}"
+TARGET_DIR="${WEB_ROOT:-${PROJECT_ROOT:?PROJECT_ROOT is required}}"
+RELEASE_ID="${RELEASE_ID:-manual}"
+STATE_DIR="${PROJECT_ROOT:?PROJECT_ROOT is required}/.zion"
+STAGING_DIR="${STATE_DIR}/document-root-staging-${RELEASE_ID}"
+BACKUP_DIR="${STATE_DIR}/document-root-backup-${RELEASE_ID}"
+
+cleanup() {
+	if [ -d "$BACKUP_DIR" ]; then
+		for ITEM in "$TARGET_DIR"/* "$TARGET_DIR"/.[!.]* "$TARGET_DIR"/..?*; do
+			[ -e "$ITEM" ] || [ -L "$ITEM" ] || continue
+			NAME=$(basename "$ITEM")
+			case "$NAME" in
+				.zion|.current) continue ;;
+			esac
+			rm -rf "$ITEM"
+		done
+		for ITEM in "$BACKUP_DIR"/* "$BACKUP_DIR"/.[!.]* "$BACKUP_DIR"/..?*; do
+			[ -e "$ITEM" ] || [ -L "$ITEM" ] || continue
+			mv "$ITEM" "$TARGET_DIR/"
+		done
+	fi
+	rm -rf "$STAGING_DIR"
+	rm -rf "$BACKUP_DIR"
+}
+trap cleanup EXIT
+
+mkdir -p "$STATE_DIR" "$TARGET_DIR"
+rm -rf "$STAGING_DIR"
+mkdir -p "$STAGING_DIR"
+CONTENT_DIR="$SOURCE_DIR"
+TOP_LEVEL_COUNT=0
+TOP_LEVEL_DIR=""
+for ITEM in "$SOURCE_DIR"/* "$SOURCE_DIR"/.[!.]* "$SOURCE_DIR"/..?*; do
+	[ -e "$ITEM" ] || [ -L "$ITEM" ] || continue
+	TOP_LEVEL_COUNT=$((TOP_LEVEL_COUNT + 1))
+	TOP_LEVEL_DIR="$ITEM"
+done
+if [ "$TOP_LEVEL_COUNT" -eq 1 ] && [ -d "$TOP_LEVEL_DIR" ]; then
+	CONTENT_DIR="$TOP_LEVEL_DIR"
+fi
+cp -a "$CONTENT_DIR"/. "$STAGING_DIR"/
+
+rm -rf "$BACKUP_DIR"
+mkdir -p "$BACKUP_DIR"
+for ITEM in "$TARGET_DIR"/* "$TARGET_DIR"/.[!.]* "$TARGET_DIR"/..?*; do
+	[ -e "$ITEM" ] || [ -L "$ITEM" ] || continue
+	NAME=$(basename "$ITEM")
+	case "$NAME" in
+		.zion|.current) continue ;;
+	esac
+	mv "$ITEM" "$BACKUP_DIR/"
+done
+cp -a "$STAGING_DIR"/. "$TARGET_DIR"/
+rm -rf "$BACKUP_DIR"
+rm -rf "$STAGING_DIR"
+trap - EXIT
+`
+
+// Sites created before the document-root layout change may still have the
+// previous generated script persisted in SQLite. Treat that exact script as
+// the default so existing sites receive the corrected behavior without
+// overwriting custom administrator scripts.
+const legacyAtomicDeployScript = `#!/bin/sh
 set -eu
 
 SOURCE_DIR="${CURRENT_DIR:-${PROJECT_ROOT}/.current}"
@@ -102,10 +169,10 @@ STAGING_DIR="${TARGET_PARENT}/.${TARGET_NAME}.staging-${RELEASE_ID}"
 BACKUP_DIR="${TARGET_PARENT}/.${TARGET_NAME}.previous-${RELEASE_ID}"
 
 cleanup() {
-    if [ ! -e "$TARGET_DIR" ] && [ -e "$BACKUP_DIR" ]; then
-        mv "$BACKUP_DIR" "$TARGET_DIR"
-    fi
-    rm -rf "$STAGING_DIR"
+	if [ ! -e "$TARGET_DIR" ] && [ -e "$BACKUP_DIR" ]; then
+		mv "$BACKUP_DIR" "$TARGET_DIR"
+	fi
+	rm -rf "$STAGING_DIR"
 }
 trap cleanup EXIT
 
@@ -114,7 +181,7 @@ mkdir -p "$STAGING_DIR"
 cp -a "$SOURCE_DIR"/. "$STAGING_DIR"/
 rm -rf "$BACKUP_DIR"
 if [ -e "$TARGET_DIR" ] || [ -L "$TARGET_DIR" ]; then
-    mv "$TARGET_DIR" "$BACKUP_DIR"
+	mv "$TARGET_DIR" "$BACKUP_DIR"
 fi
 mv "$STAGING_DIR" "$TARGET_DIR"
 rm -rf "$BACKUP_DIR"
@@ -122,10 +189,11 @@ trap - EXIT
 `
 
 func EffectiveDeployScript(strategy, script string) string {
-	if strategy == "atomic" && strings.TrimSpace(script) == "" {
+	trimmed := strings.TrimSpace(script)
+	if strategy == "atomic" && (trimmed == "" || trimmed == strings.TrimSpace(legacyAtomicDeployScript)) {
 		return DefaultAtomicDeployScript
 	}
-	return strings.TrimSpace(script)
+	return trimmed
 }
 
 func NewStore(db *sql.DB) *Store {

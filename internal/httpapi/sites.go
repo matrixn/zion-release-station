@@ -9,7 +9,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -289,7 +288,7 @@ func (s *Server) handleSiteRepository(w http.ResponseWriter, r *http.Request, si
 		}
 		webRoot := site.WebRoot
 		if strategy == "atomic" {
-			webRoot = filepath.Join(site.ProjectRoot, "current")
+			webRoot = site.ProjectRoot
 		} else if strings.TrimSuffix(filepath.Clean(webRoot), string(filepath.Separator)) == filepath.Join(filepath.Clean(site.ProjectRoot), "current") {
 			webRoot = site.ProjectRoot
 		}
@@ -581,7 +580,7 @@ func (s *Server) prepareSiteInput(ctx context.Context, payload sitePayload) (sit
 	webRoot := payload.WebRoot
 	if webRoot == "" {
 		if strategy == "atomic" {
-			webRoot = filepath.Join(projectRoot, "current")
+			webRoot = projectRoot
 		} else {
 			webRoot = projectRoot
 			if detectionResult.DocumentRoot != "" {
@@ -590,25 +589,14 @@ func (s *Server) prepareSiteInput(ctx context.Context, payload sitePayload) (sit
 		}
 	}
 	webRoot = filepath.Clean(webRoot)
-	missingAtomicCurrent := strategy == "atomic" && webRoot == filepath.Join(projectRoot, "current")
-	if missingAtomicCurrent {
-		if _, statErr := os.Stat(webRoot); statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-			return sites.Input{}, nil, fmt.Errorf("web root: %w", statErr)
-		}
-	} else {
-		webRoot, err = pathsecurity.CanonicalDirectory(webRoot)
-		if err != nil {
-			return sites.Input{}, nil, fmt.Errorf("web root: %w", err)
-		}
+	webRoot, err = pathsecurity.CanonicalDirectory(webRoot)
+	if err != nil {
+		return sites.Input{}, nil, fmt.Errorf("web root: %w", err)
 	}
 	if !pathsecurity.IsWithin(projectRoot, webRoot) {
 		return sites.Input{}, nil, fmt.Errorf("web root must remain inside project root")
 	}
-	permissionPath := webRoot
-	if missingAtomicCurrent {
-		permissionPath = projectRoot
-	}
-	permission, err := permissions.Check(permissionPath)
+	permission, err := permissions.Check(webRoot)
 	if err != nil {
 		return sites.Input{}, nil, err
 	}

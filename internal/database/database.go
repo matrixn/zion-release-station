@@ -66,6 +66,7 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		{version: "0005_site_settings", file: "migrations/0005_site_settings.sql"},
 		{version: "0006_system_overview_checks", file: "migrations/0006_system_overview_checks.sql"},
 		{version: "0007_workspace_settings", file: "migrations/0007_workspace_settings.sql"},
+		{version: "0008_atomic_document_root", file: "migrations/0008_atomic_document_root.sql"},
 	}
 	for _, migration := range migrations {
 		var applied bool
