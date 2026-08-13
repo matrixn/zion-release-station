@@ -71,6 +71,7 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 func (s *Server) registerIntegrationRoutes(mux *http.ServeMux, prefix string) {
 	mux.HandleFunc(prefix+"/integrations/github", s.handleGitHubConnection)
 	mux.HandleFunc(prefix+"/integrations/github/install", s.handleGitHubInstall)
+	mux.HandleFunc(prefix+"/integrations/github/setup", s.handleGitHubSetupRedirect)
 	mux.HandleFunc(prefix+"/integrations/github/complete", s.handleGitHubPairingComplete)
 	mux.HandleFunc(prefix+"/integrations/github/pairing-status", s.handleGitHubPairingStatus)
 	mux.HandleFunc(prefix+"/integrations/github/repositories", s.handleGitHubRepositories)

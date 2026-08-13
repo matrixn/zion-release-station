@@ -162,6 +162,31 @@ func TestGitHubConnectionSettingsAPI(t *testing.T) {
 	}
 }
 
+func TestLegacyGitHubSetupRedirectsToConnector(t *testing.T) {
+	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	server := NewServer(config.Config{
+		WebRoot:            t.TempDir(),
+		Version:            "0.1.0-test",
+		GitHubConnectorURL: "https://connector.example.test/",
+		InstanceID:         "test-instance",
+	}, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	recorder := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodGet, "/releasestation/api/v1/integrations/github/setup?installation_id=42&setup_action=install&state=pairing-state&ignored=drop", nil)
+	server.http.Handler.ServeHTTP(recorder, request)
+
+	if recorder.Code != http.StatusSeeOther {
+		t.Fatalf("expected setup redirect, got %d %q", recorder.Code, recorder.Body.String())
+	}
+	if got := recorder.Header().Get("Location"); got != "https://connector.example.test/github/callback?installation_id=42&setup_action=install&state=pairing-state" {
+		t.Fatalf("unexpected connector callback location %q", got)
+	}
+}
+
 func TestLegacyGitHubAppConfigurationRoutesAreRemoved(t *testing.T) {
 	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
 	if err != nil {

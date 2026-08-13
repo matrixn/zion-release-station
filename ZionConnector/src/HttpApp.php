@@ -134,7 +134,6 @@ final class HttpApp
         $body = $this->requestBody();
         $instanceId = trim((string) ($body['instance_id'] ?? ''));
         $completionUrl = $this->config->publicBaseUrl . '/pairing/complete';
-        $returnHost = strtolower((string) parse_url($completionUrl, PHP_URL_HOST));
         if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{1,127}$/', $instanceId)) {
             $this->json(422, ['error' => ['code' => 'INVALID_PAIRING', 'message' => 'The ReleaseStation instance is invalid.']]);
             return;
@@ -235,7 +234,7 @@ final class HttpApp
         $state = trim((string) ($_GET['state'] ?? ''));
         $code = trim((string) ($_GET['code'] ?? ''));
         $installationId = filter_var($_GET['installation_id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
-        if ($state === '' || $code === '' || !is_int($installationId)) {
+        if ($state === '' || !is_int($installationId)) {
             $this->json(400, ['error' => ['code' => 'INVALID_CALLBACK', 'message' => 'GitHub callback parameters are incomplete.']]);
             return;
         }
@@ -246,20 +245,27 @@ final class HttpApp
             $this->json(400, ['error' => ['code' => 'INVALID_STATE', 'message' => 'The GitHub connection state is invalid or expired.']]);
             return;
         }
-        $tokens = $this->github->exchangeCode($code);
-        $userToken = (string) ($tokens['access_token'] ?? '');
-        if ($userToken === '') {
-            throw new RuntimeException('GitHub did not return an OAuth access token.');
-        }
-        $this->github->authenticatedUser($userToken);
-        $userInstallation = $this->github->userInstallation($userToken, $installationId);
-        if ((int) ($userInstallation['id'] ?? 0) !== $installationId) {
-            throw new RuntimeException('GitHub installation verification failed.');
+        $pairingSession = $pairingSession !== null;
+        $userInstallation = [];
+        if ($code !== '') {
+            $tokens = $this->github->exchangeCode($code);
+            $userToken = (string) ($tokens['access_token'] ?? '');
+            if ($userToken === '') {
+                throw new RuntimeException('GitHub did not return an OAuth access token.');
+            }
+            $this->github->authenticatedUser($userToken);
+            $userInstallation = $this->github->userInstallation($userToken, $installationId);
+            if ((int) ($userInstallation['id'] ?? 0) !== $installationId) {
+                throw new RuntimeException('GitHub installation verification failed.');
+            }
+        } elseif (!$pairingSession) {
+            $this->json(400, ['error' => ['code' => 'INVALID_CALLBACK', 'message' => 'GitHub OAuth callback parameters are incomplete.']]);
+            return;
         }
         $appInstallation = $this->github->appInstallation($installationId);
         $account = is_array($appInstallation['account'] ?? null) ? $appInstallation['account'] : [];
         $instanceId = (string) $session['instance_id'];
-        $isPairing = $pairingSession !== null;
+        $isPairing = $pairingSession;
         if ($isPairing) {
             $credential = $this->config->pairingCredential($instanceId, $state);
             if ($this->database->findInstance($instanceId) === null) {

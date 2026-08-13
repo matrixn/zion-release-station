@@ -115,6 +115,35 @@ func (s *Server) handleGitHubInstall(w http.ResponseWriter, r *http.Request) {
 	}})
 }
 
+// handleGitHubSetupRedirect keeps older GitHub App installations compatible.
+// GitHub calls the App's configured Setup URL with installation_id/state, while
+// newer deployments point that URL directly at the connector callback.
+func (s *Server) handleGitHubSetupRedirect(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only GET is supported.")
+		return
+	}
+	if !s.githubManaged.PairingConfigured() {
+		writeError(w, http.StatusServiceUnavailable, "GITHUB_CONNECTOR_UNAVAILABLE", s.githubManaged.ConfigurationError())
+		return
+	}
+	state := strings.TrimSpace(r.URL.Query().Get("state"))
+	installationID := strings.TrimSpace(r.URL.Query().Get("installation_id"))
+	if state == "" || installationID == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_CALLBACK", "GitHub setup parameters are incomplete.")
+		return
+	}
+
+	query := url.Values{}
+	for _, key := range []string{"state", "installation_id", "setup_action", "code", "error", "error_description", "error_uri"} {
+		if value := strings.TrimSpace(r.URL.Query().Get(key)); value != "" {
+			query.Set(key, value)
+		}
+	}
+	target := strings.TrimRight(strings.TrimSpace(s.config.GitHubConnectorURL), "/") + "/github/callback?" + query.Encode()
+	http.Redirect(w, r, target, http.StatusSeeOther)
+}
+
 func (s *Server) handleGitHubPairingStatus(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only POST is supported.")
