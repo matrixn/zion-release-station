@@ -159,7 +159,7 @@ final class HttpApp
                     $this->debug->serverHeaders($_SERVER),
                     $this->rawRequestBody,
                     http_response_code() ?: 200,
-                    header_list(),
+                    function_exists('headers_list') ? headers_list() : [],
                     $this->lastResponseBody,
                     (int) round((microtime(true) - $started) * 1000),
                 );
