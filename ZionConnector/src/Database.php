@@ -95,6 +95,22 @@ final class Database
                 updated_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_installations_instance ON github_installations(instance_id);
+            CREATE TABLE IF NOT EXISTS github_webhook_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                instance_id TEXT NOT NULL REFERENCES connector_instances(id) ON DELETE CASCADE,
+                delivery_id TEXT NOT NULL UNIQUE,
+                event_name TEXT NOT NULL,
+                action TEXT NULL,
+                github_installation_id INTEGER NULL,
+                repository_full_name TEXT NULL,
+                ref_name TEXT NULL,
+                before_sha TEXT NULL,
+                after_sha TEXT NULL,
+                deleted INTEGER NOT NULL DEFAULT 0,
+                payload_json TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_webhook_events_instance_id ON github_webhook_events(instance_id, id);
         SQL);
     }
 
@@ -154,7 +170,82 @@ final class Database
                 CONSTRAINT fk_installations_instance FOREIGN KEY (instance_id) REFERENCES connector_instances(id) ON DELETE CASCADE,
                 INDEX idx_installations_instance (instance_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+            CREATE TABLE IF NOT EXISTS github_webhook_events (
+                id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+                instance_id VARCHAR(128) NOT NULL,
+                delivery_id VARCHAR(255) NOT NULL UNIQUE,
+                event_name VARCHAR(128) NOT NULL,
+                action VARCHAR(128) NULL,
+                github_installation_id BIGINT NULL,
+                repository_full_name VARCHAR(512) NULL,
+                ref_name VARCHAR(512) NULL,
+                before_sha CHAR(64) NULL,
+                after_sha CHAR(64) NULL,
+                deleted TINYINT(1) NOT NULL DEFAULT 0,
+                payload_json LONGTEXT NOT NULL,
+                created_at VARCHAR(32) NOT NULL,
+                CONSTRAINT fk_webhook_events_instance FOREIGN KEY (instance_id) REFERENCES connector_instances(id) ON DELETE CASCADE,
+                INDEX idx_webhook_events_instance_id (instance_id, id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         SQL);
+    }
+
+    /** @return array<string,mixed>|null */
+    public function findInstanceByInstallation(int $installationId): ?array
+    {
+        $statement = $this->pdo->prepare('SELECT ci.* FROM connector_instances ci INNER JOIN github_installations gi ON gi.instance_id = ci.id WHERE gi.github_installation_id = :installation_id AND ci.status = \'active\' AND gi.suspended_at IS NULL LIMIT 1');
+        $statement->execute(['installation_id' => $installationId]);
+        $row = $statement->fetch();
+        return is_array($row) ? $row : null;
+    }
+
+    /** @param array<string,mixed> $event */
+    public function recordWebhookEvent(array $event): bool
+    {
+        $sql = $this->mysql
+            ? 'INSERT IGNORE INTO github_webhook_events (instance_id, delivery_id, event_name, action, github_installation_id, repository_full_name, ref_name, before_sha, after_sha, deleted, payload_json, created_at) VALUES (:instance_id, :delivery_id, :event_name, :action, :github_installation_id, :repository_full_name, :ref_name, :before_sha, :after_sha, :deleted, :payload_json, :created_at)'
+            : 'INSERT OR IGNORE INTO github_webhook_events (instance_id, delivery_id, event_name, action, github_installation_id, repository_full_name, ref_name, before_sha, after_sha, deleted, payload_json, created_at) VALUES (:instance_id, :delivery_id, :event_name, :action, :github_installation_id, :repository_full_name, :ref_name, :before_sha, :after_sha, :deleted, :payload_json, :created_at)';
+        $statement = $this->pdo->prepare($sql);
+        $statement->execute([
+            'instance_id' => $event['instance_id'],
+            'delivery_id' => $event['delivery_id'],
+            'event_name' => $event['event_name'],
+            'action' => $event['action'],
+            'github_installation_id' => $event['github_installation_id'],
+            'repository_full_name' => $event['repository_full_name'],
+            'ref_name' => $event['ref_name'],
+            'before_sha' => $event['before_sha'],
+            'after_sha' => $event['after_sha'],
+            'deleted' => $event['deleted'] ? 1 : 0,
+            'payload_json' => $event['payload_json'],
+            'created_at' => gmdate('c'),
+        ]);
+        return $statement->rowCount() === 1;
+    }
+
+    /** @return list<array<string,mixed>> */
+    public function webhookEvents(string $instanceId, int $afterId, int $limit = 50): array
+    {
+        $limit = min(100, max(1, $limit));
+        $statement = $this->pdo->prepare('SELECT id, delivery_id, event_name, action, github_installation_id, repository_full_name, ref_name, before_sha, after_sha, deleted, created_at FROM github_webhook_events WHERE instance_id = :instance_id AND id > :after_id ORDER BY id ASC LIMIT ' . $limit);
+        $statement->execute(['instance_id' => $instanceId, 'after_id' => $afterId]);
+        return $statement->fetchAll() ?: [];
+    }
+
+    /** @return array<string,mixed> */
+    public function webhookStatus(?string $instanceId = null): array
+    {
+        if ($instanceId === null) {
+            $row = $this->pdo->query('SELECT COUNT(*) AS accepted_events, MAX(created_at) AS last_event_at FROM github_webhook_events')->fetch();
+        } else {
+            $statement = $this->pdo->prepare('SELECT COUNT(*) AS accepted_events, MAX(created_at) AS last_event_at FROM github_webhook_events WHERE instance_id = :instance_id');
+            $statement->execute(['instance_id' => $instanceId]);
+            $row = $statement->fetch();
+        }
+        return [
+            'accepted_events' => (int) ($row['accepted_events'] ?? 0),
+            'last_event_at' => $row['last_event_at'] ?? null,
+        ];
     }
 
     /** @return array<string,mixed> */

@@ -58,4 +58,40 @@ final class DatabaseTest extends TestCase
         self::assertSame(123456, (int) $session['github_installation_id']);
         self::assertNull($database->consumePairingSession('nas-002', $stateHash));
     }
+
+    public function testWebhookEventsAreDeduplicatedAndScopedToTheInstance(): void
+    {
+        $database = new Database($this->path);
+        $database->migrate();
+        $database->createInstance('nas-webhook', null, hash('sha256', 'secret'), 'nas.example.com');
+        $database->saveInstallation([
+            'id' => 'installation-row',
+            'instance_id' => 'nas-webhook',
+            'github_installation_id' => 4242,
+            'account_login' => 'matrixn',
+            'account_type' => 'User',
+            'repository_selection' => 'selected',
+            'permissions' => ['contents' => 'read'],
+        ]);
+
+        $event = [
+            'instance_id' => 'nas-webhook',
+            'delivery_id' => 'delivery-001',
+            'event_name' => 'push',
+            'action' => null,
+            'github_installation_id' => 4242,
+            'repository_full_name' => 'matrixn/example',
+            'ref_name' => 'refs/heads/main',
+            'before_sha' => str_repeat('a', 40),
+            'after_sha' => str_repeat('b', 40),
+            'deleted' => false,
+            'payload_json' => '{"ref":"refs/heads/main"}',
+        ];
+
+        self::assertNotNull($database->findInstanceByInstallation(4242));
+        self::assertTrue($database->recordWebhookEvent($event));
+        self::assertFalse($database->recordWebhookEvent($event));
+        self::assertCount(1, $database->webhookEvents('nas-webhook', 0));
+        self::assertSame(1, $database->webhookStatus('nas-webhook')['accepted_events']);
+    }
 }

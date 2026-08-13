@@ -75,11 +75,34 @@ type Commit struct {
 	CreatedAt string `json:"created_at,omitempty"`
 }
 
+type WebhookStatus struct {
+	Configured     bool   `json:"configured"`
+	Endpoint       string `json:"endpoint,omitempty"`
+	AcceptedEvents int64  `json:"accepted_events"`
+	LastEventAt    string `json:"last_event_at,omitempty"`
+}
+
+type WebhookEvent struct {
+	ID                   int64  `json:"id"`
+	DeliveryID           string `json:"delivery_id"`
+	EventName            string `json:"event_name"`
+	Action               string `json:"action,omitempty"`
+	GitHubInstallationID int64  `json:"github_installation_id"`
+	RepositoryFullName   string `json:"repository_full_name"`
+	RefName              string `json:"ref_name"`
+	BeforeSHA            string `json:"before_sha,omitempty"`
+	AfterSHA             string `json:"after_sha,omitempty"`
+	Deleted              bool   `json:"deleted"`
+	CreatedAt            string `json:"created_at"`
+}
+
 type Status struct {
-	State         string         `json:"state"`
-	AccountLogin  string         `json:"account_login,omitempty"`
-	Installations []Installation `json:"installations,omitempty"`
-	Message       string         `json:"message,omitempty"`
+	State             string         `json:"state"`
+	AccountLogin      string         `json:"account_login,omitempty"`
+	Installations     []Installation `json:"installations,omitempty"`
+	Message           string         `json:"message,omitempty"`
+	WebhookConfigured bool           `json:"webhook_configured"`
+	Webhook           WebhookStatus  `json:"webhook"`
 }
 
 func NewClient(cfg config.Config) *Client {
@@ -206,6 +229,28 @@ func (c *Client) Status(ctx context.Context) (Status, error) {
 		return Status{}, fmt.Errorf("read managed GitHub status: %w", err)
 	}
 	return response, nil
+}
+
+func (c *Client) WebhookEvents(ctx context.Context, afterID int64, limit int) ([]WebhookEvent, error) {
+	if !c.Configured() {
+		return nil, fmt.Errorf("managed GitHub connector is not configured: %s", c.ConfigurationError())
+	}
+	if afterID < 0 {
+		afterID = 0
+	}
+	if limit < 1 || limit > 100 {
+		limit = 50
+	}
+	query := url.Values{}
+	query.Set("after_id", fmt.Sprintf("%d", afterID))
+	query.Set("limit", fmt.Sprintf("%d", limit))
+	var response struct {
+		Events []WebhookEvent `json:"events"`
+	}
+	if err := c.request(ctx, http.MethodGet, c.path("github/webhooks/events")+"?"+query.Encode(), nil, &response); err != nil {
+		return nil, fmt.Errorf("read managed GitHub webhook events: %w", err)
+	}
+	return response.Events, nil
 }
 
 func (c *Client) Repositories(ctx context.Context) ([]Repository, error) {

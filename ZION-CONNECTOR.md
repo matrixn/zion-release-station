@@ -259,6 +259,22 @@ Pentru strategia `atomic`, document root-ul site-ului trebuie să fie:
 
 ReleaseStation pregătește release-ul, păstrează site-ul pe versiunea curentă și înlocuiește symlink-ul `current` prin rename atomic. Arhivele cu path traversal, symlink-uri sau fișiere speciale sunt respinse, iar dimensiunea arhivei și a rezultatului expandat este limitată la 512 MB.
 
+## Webhook push-to-deploy
+
+Webhook-ul GitHub este primit numai de Zion Connector, nu direct de NAS. În fișierul `.env` al Connector-ului setează secretul:
+
+```dotenv
+CONNECTOR_GITHUB_WEBHOOK_SECRET=un-secret-lung-si-aleatoriu
+```
+
+În setările aplicației GitHub **Synology Connector** configurează webhook-ul cu URL-ul public al Connector-ului, de exemplu `https://connect.example.com/github/webhook`, Content type `application/json`, același secret și evenimentul `Push`. Secretul nu se pune în SPK și nu se afișează în aplicație.
+
+Connector-ul validează semnătura `X-Hub-Signature-256`, deduplicatează `X-GitHub-Delivery` și pune evenimentele acceptate în coada asociată installation-ului GitHub. ReleaseStation face polling autentificat al cozii, verifică repository-ul, installation-ul, branch-ul și opțiunea `Push to deploy`, apoi rulează deploy-ul atomic existent. Evenimentele care nu corespund unui site/branch configurat sunt consumate fără deploy.
+
+În aplicația nativă DSM, cardul **Synology Connector** afișează separat verificarea **GitHub webhook configured**, endpointul și numărul de evenimente acceptate. Dacă verificarea este roșie, confirmă variabila în `.env`-ul Connector-ului, accesul public HTTPS și evenimentul `Push`.
+
+După modificarea Connector-ului, rulează task-ul VS Code **Zion Connector: Deploy to Synology**. După modificarea SPK-ului, rulează **ReleaseStation: Deploy SPK to DS1019+**. Pentru test, fă push în branch-ul configurat după ce bifezi **Push to deploy**; în Dashboard trebuie să apară un deployment cu metoda `webhook`.
+
 ## Configurarea GitHub App
 
 Creează aplicația sub o organizație Zion, nu sub un cont personal, pentru a putea controla accesul și rotația cheilor.

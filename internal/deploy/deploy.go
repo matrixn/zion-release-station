@@ -99,6 +99,17 @@ func (r *Runner) DeployGitHub(ctx context.Context, site sites.Site) (Result, err
 }
 
 func (r *Runner) DeployGitHubRef(ctx context.Context, site sites.Site, ref string) (result Result, err error) {
+	return r.deployGitHubRef(ctx, site, ref, "manual", "manual")
+}
+
+// DeployGitHubWebhook records and executes a deployment caused by a verified
+// GitHub push event. The event is still resolved through the connector before
+// downloading the archive, so the webhook payload never becomes shell input.
+func (r *Runner) DeployGitHubWebhook(ctx context.Context, site sites.Site, ref string) (result Result, err error) {
+	return r.deployGitHubRef(ctx, site, ref, "webhook", "webhook")
+}
+
+func (r *Runner) deployGitHubRef(ctx context.Context, site sites.Site, ref, triggerType, deploymentMethod string) (result Result, err error) {
 	if site.Strategy != "atomic" {
 		return Result{}, fmt.Errorf("site %q is not configured for atomic deployment", site.ID)
 	}
@@ -157,7 +168,7 @@ func (r *Runner) DeployGitHubRef(ctx context.Context, site sites.Site, ref strin
 	if commit.SHA != "" {
 		logs.add("build", "Resolved "+commit.SHA+" — "+strings.Split(commit.Message, "\n")[0])
 	}
-	if err := r.createDeployment(ctx, deploymentID, site.ID, branch, commit); err != nil {
+	if err := r.createDeployment(ctx, deploymentID, site.ID, branch, commit, triggerType, deploymentMethod); err != nil {
 		return Result{}, err
 	}
 	failed := true
@@ -265,9 +276,15 @@ func runDeploymentScript(ctx context.Context, site sites.Site, releasePath, curr
 	return nil
 }
 
-func (r *Runner) createDeployment(ctx context.Context, id, siteID, branch string, commit githubconnector.Commit) error {
+func (r *Runner) createDeployment(ctx context.Context, id, siteID, branch string, commit githubconnector.Commit, triggerType, deploymentMethod string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := r.db.ExecContext(ctx, `INSERT INTO deployments(id, site_id, trigger_type, branch, commit_sha, commit_message, commit_url, deployment_method, status, queued_at, started_at, created_at) VALUES (?, ?, 'manual', ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), 'manual', 'running', ?, ?, ?)`, id, siteID, branch, commit.SHA, commit.Message, commit.URL, now, now, now)
+	if strings.TrimSpace(triggerType) == "" {
+		triggerType = "manual"
+	}
+	if strings.TrimSpace(deploymentMethod) == "" {
+		deploymentMethod = "manual"
+	}
+	_, err := r.db.ExecContext(ctx, `INSERT INTO deployments(id, site_id, trigger_type, branch, commit_sha, commit_message, commit_url, deployment_method, status, queued_at, started_at, created_at) VALUES (?, ?, ?, ?, NULLIF(?, ''), NULLIF(?, ''), NULLIF(?, ''), ?, 'running', ?, ?, ?)`, id, siteID, triggerType, branch, commit.SHA, commit.Message, commit.URL, deploymentMethod, now, now, now)
 	if err != nil {
 		return fmt.Errorf("create deployment record: %w", err)
 	}

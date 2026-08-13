@@ -19,6 +19,7 @@ final class ConfigTest extends TestCase
         putenv('CONNECTOR_GITHUB_CLIENT_ID=client');
         putenv('CONNECTOR_GITHUB_CLIENT_SECRET=secret');
         putenv('CONNECTOR_GITHUB_PRIVATE_KEY_PATH=/does/not/exist');
+        putenv('CONNECTOR_GITHUB_WEBHOOK_SECRET=webhook-secret');
         putenv('CONNECTOR_RETURN_HOSTS=nas.example.com');
     }
 
@@ -49,5 +50,13 @@ final class ConfigTest extends TestCase
         $config = Config::fromEnvironment();
 
         self::assertTrue($config->isAllowedReturnUrl('https://nas.example.com/webman/3rdparty/zion-releasestation/index.html', 'nas.example.com'));
+    }
+
+    public function testWebhookSecretIsReadFromConnectorEnvironment(): void
+    {
+        $config = Config::fromEnvironment();
+
+        self::assertTrue($config->githubWebhookConfigured());
+        self::assertSame('webhook-secret', $config->githubWebhookSecret);
     }
 }

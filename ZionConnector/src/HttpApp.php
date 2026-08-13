@@ -58,8 +58,12 @@ final class HttpApp
                 $this->callback();
                 return;
             }
+            if ($method === 'POST' && $path === '/github/webhook') {
+                $this->githubWebhook();
+                return;
+            }
 
-            if (preg_match('#^/v1/instances/([^/]+)/github/(sessions|status|repositories)(?:/(.*))?$#', $path, $matches) === 1) {
+            if (preg_match('#^/v1/instances/([^/]+)/github/(sessions|status|repositories|webhooks)(?:/(.*))?$#', $path, $matches) === 1) {
                 $instanceId = rawurldecode($matches[1]);
                 $resource = $matches[2];
                 $suffix = $matches[3] ?? '';
@@ -74,6 +78,14 @@ final class HttpApp
                 }
                 if ($resource === 'status' && $method === 'GET') {
                     $this->status($instanceId);
+                    return;
+                }
+                if ($resource === 'webhooks' && $method === 'GET' && ($suffix === '' || $suffix === 'status')) {
+                    $this->webhookStatus($instanceId);
+                    return;
+                }
+                if ($resource === 'webhooks' && $method === 'GET' && $suffix === 'events') {
+                    $this->webhookEvents($instanceId);
                     return;
                 }
                 if ($resource === 'repositories' && $method === 'GET' && $suffix === '') {
@@ -316,7 +328,84 @@ final class HttpApp
             'account_login' => $installations[0]['account_login'] ?? null,
             'installations' => $installations,
             'message' => $installations === [] ? 'No GitHub installation is connected.' : null,
+            'webhook_configured' => $this->config->githubWebhookConfigured(),
+            'webhook' => $this->database->webhookStatus($instanceId),
         ]);
+    }
+
+    private function webhookStatus(string $instanceId): void
+    {
+        $status = $this->database->webhookStatus($instanceId);
+        $this->json(200, [
+            'configured' => $this->config->githubWebhookConfigured(),
+            'endpoint' => $this->config->publicBaseUrl . '/github/webhook',
+            'accepted_events' => $status['accepted_events'],
+            'last_event_at' => $status['last_event_at'],
+        ]);
+    }
+
+    private function webhookEvents(string $instanceId): void
+    {
+        $afterID = max(0, (int) ($_GET['after_id'] ?? 0));
+        $events = $this->database->webhookEvents($instanceId, $afterID, (int) ($_GET['limit'] ?? 50));
+        $this->json(200, ['events' => $events]);
+    }
+
+    private function githubWebhook(): void
+    {
+        if (!$this->config->githubWebhookConfigured()) {
+            $this->json(503, ['error' => ['code' => 'WEBHOOK_NOT_CONFIGURED', 'message' => 'CONNECTOR_GITHUB_WEBHOOK_SECRET is not configured.']]);
+            return;
+        }
+        $rawBody = file_get_contents('php://input') ?: '';
+        $signature = trim((string) ($_SERVER['HTTP_X_HUB_SIGNATURE_256'] ?? ''));
+        $expected = 'sha256=' . hash_hmac('sha256', $rawBody, $this->config->githubWebhookSecret);
+        if ($signature === '' || !hash_equals($expected, $signature)) {
+            $this->json(401, ['error' => ['code' => 'INVALID_WEBHOOK_SIGNATURE', 'message' => 'Webhook signature validation failed.']]);
+            return;
+        }
+        $deliveryID = trim((string) ($_SERVER['HTTP_X_GITHUB_DELIVERY'] ?? ''));
+        $eventName = trim((string) ($_SERVER['HTTP_X_GITHUB_EVENT'] ?? ''));
+        if ($deliveryID === '' || $eventName === '') {
+            $this->json(400, ['error' => ['code' => 'INVALID_WEBHOOK', 'message' => 'GitHub delivery and event headers are required.']]);
+            return;
+        }
+        try {
+            $body = json_decode($rawBody, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException) {
+            $this->json(400, ['error' => ['code' => 'INVALID_WEBHOOK', 'message' => 'Webhook body must be valid JSON.']]);
+            return;
+        }
+        if (!is_array($body)) {
+            $this->json(400, ['error' => ['code' => 'INVALID_WEBHOOK', 'message' => 'Webhook body must be a JSON object.']]);
+            return;
+        }
+        $installationID = filter_var($body['installation']['id'] ?? null, FILTER_VALIDATE_INT, ['options' => ['min_range' => 1]]);
+        if (!is_int($installationID)) {
+            $this->json(202, ['accepted' => false, 'reason' => 'No installation identifier.']);
+            return;
+        }
+        $instance = $this->database->findInstanceByInstallation($installationID);
+        if ($instance === null) {
+            $this->json(202, ['accepted' => false, 'reason' => 'Installation is not paired to a ReleaseStation instance.']);
+            return;
+        }
+        $repository = is_array($body['repository'] ?? null) ? $body['repository'] : [];
+        $event = [
+            'instance_id' => $instance['id'],
+            'delivery_id' => $deliveryID,
+            'event_name' => $eventName,
+            'action' => isset($body['action']) ? trim((string) $body['action']) : null,
+            'github_installation_id' => $installationID,
+            'repository_full_name' => isset($repository['full_name']) ? trim((string) $repository['full_name']) : null,
+            'ref_name' => trim((string) ($body['ref'] ?? '')),
+            'before_sha' => isset($body['before']) ? trim((string) $body['before']) : null,
+            'after_sha' => isset($body['after']) ? trim((string) $body['after']) : null,
+            'deleted' => (bool) ($body['deleted'] ?? false),
+            'payload_json' => $rawBody,
+        ];
+        $accepted = $this->database->recordWebhookEvent($event);
+        $this->json(202, ['accepted' => true, 'duplicate' => !$accepted, 'instance_id' => $instance['id']]);
     }
 
     private function repositories(string $instanceId): void

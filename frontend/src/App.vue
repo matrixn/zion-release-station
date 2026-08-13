@@ -1,5 +1,10 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue';
+import { basicSetup, EditorView } from 'codemirror';
+import { StreamLanguage } from '@codemirror/language';
+import { shell } from '@codemirror/legacy-modes/mode/shell';
+import { oneDark } from '@codemirror/theme-one-dark';
+import { EditorState } from '@codemirror/state';
 import {
   Activity,
   ArrowDownToLine,
@@ -89,6 +94,10 @@ type GithubState = {
   setup_url: string;
   account_login?: string;
   installations: GithubInstallation[];
+  webhook_configured?: boolean;
+  webhook_endpoint?: string;
+  webhook_accepted_events?: number;
+  webhook_last_event_at?: string;
 };
 
 const healthState = ref<HealthState>('checking');
@@ -158,7 +167,7 @@ const wizardForm = ref({
   githubFullName: '',
   githubDefaultBranch: '',
 });
-const githubState = ref<GithubState>({ configured: false, mode: 'managed', configuration_error: '', connected: false, app_slug: '', setup_url: '', installations: [] });
+const githubState = ref<GithubState>({ configured: false, mode: 'managed', configuration_error: '', connected: false, app_slug: '', setup_url: '', installations: [], webhook_configured: false, webhook_endpoint: '', webhook_accepted_events: 0, webhook_last_event_at: '' });
 const githubRepositories = ref<GithubRepository[]>([]);
 const githubBranches = ref<string[]>([]);
 const githubBranchesLoading = ref(false);
@@ -198,6 +207,8 @@ const siteSettingsForm = ref({
   deploy_script: '',
   deployment_retention: 4,
 });
+const deployScriptEditor = ref<HTMLElement | null>(null);
+let deployScriptEditorView: EditorView | null = null;
 type DashboardMetrics = {
   successful_deploys: number;
   total_deploys: number;
@@ -216,6 +227,10 @@ const systemChecksMessage = ref('');
 const systemChecksError = ref('');
 watch(activeNav, (value) => {
   try { localStorage.setItem(navigationStorageKey, value); } catch { /* localStorage is optional */ }
+});
+watch(selectedSiteTab, (value) => {
+  if (value === 'Settings') nextTick(mountDeployScriptEditor);
+  else destroyDeployScriptEditor();
 });
 let githubPollTimer: ReturnType<typeof setInterval> | undefined;
 let importCloseTimer: ReturnType<typeof setTimeout> | undefined;
@@ -272,7 +287,7 @@ function copyPublicIP(site: Site | null) {
 }
 
 function emptyGithubState(): GithubState {
-  return { configured: false, mode: 'managed', configuration_error: 'Synology Connector is not provisioned for this Release Station instance', connected: false, app_slug: '', setup_url: '', installations: [] };
+  return { configured: false, mode: 'managed', configuration_error: 'Synology Connector is not provisioned for this Release Station instance', connected: false, app_slug: '', setup_url: '', installations: [], webhook_configured: false, webhook_endpoint: '', webhook_accepted_events: 0, webhook_last_event_at: '' };
 }
 
 const navItems = computed(() => [
@@ -540,6 +555,52 @@ function openSiteSettings() {
   siteSettingsMessage.value = '';
   siteSettingsError.value = '';
   selectedSiteTab.value = 'Settings';
+  nextTick(mountDeployScriptEditor);
+}
+
+const deployScriptLineCount = computed(() => Math.max(1, siteSettingsForm.value.deploy_script.split('\n').length));
+
+function destroyDeployScriptEditor() {
+  deployScriptEditorView?.destroy();
+  deployScriptEditorView = null;
+}
+
+function syncDeployScriptEditor() {
+  if (!deployScriptEditorView) return;
+  const value = siteSettingsForm.value.deploy_script;
+  if (deployScriptEditorView.state.doc.toString() === value) return;
+  deployScriptEditorView.dispatch({ changes: { from: 0, to: deployScriptEditorView.state.doc.length, insert: value } });
+}
+
+function mountDeployScriptEditor() {
+  if (!deployScriptEditor.value) return;
+  destroyDeployScriptEditor();
+  deployScriptEditorView = new EditorView({
+    state: EditorState.create({
+      doc: siteSettingsForm.value.deploy_script,
+      extensions: [
+        basicSetup,
+        oneDark,
+        StreamLanguage.define(shell),
+        EditorView.lineWrapping,
+        EditorState.tabSize.of(2),
+        EditorView.theme({
+          '&': { minHeight: '310px', backgroundColor: '#0b111b', color: '#d9e7f5' },
+          '.cm-scroller': { overflow: 'auto', fontFamily: "'DM Mono', monospace", fontSize: '11px', lineHeight: '1.7' },
+          '.cm-content': { minHeight: '310px', padding: '16px 0' },
+          '.cm-gutters': { minHeight: '310px', border: '0', borderRight: '1px solid #1d2a3b', backgroundColor: '#0b111b', color: '#60748c' },
+          '.cm-activeLineGutter': { color: '#f2a05d', backgroundColor: '#111b2a' },
+          '.cm-activeLine': { backgroundColor: 'rgba(84, 129, 177, .08)' },
+          '.cm-selectionBackground, ::selection': { backgroundColor: 'rgba(242, 140, 59, .28) !important' },
+          '.cm-focused': { outline: 'none' },
+        }),
+        EditorView.updateListener.of((update) => {
+          if (update.docChanged) siteSettingsForm.value.deploy_script = update.state.doc.toString();
+        }),
+      ],
+    }),
+    parent: deployScriptEditor.value,
+  });
 }
 
 function addSiteTag() {
@@ -573,6 +634,7 @@ async function saveSiteSettings() {
     await loadSites();
     selectedSite.value = sites.value.find((site) => site.id === selectedSite.value?.id) || selectedSite.value;
     resetSiteSettingsForm(selectedSite.value);
+    syncDeployScriptEditor();
     siteSettingsMessage.value = 'Setările site-ului au fost salvate.';
   } catch (error) { siteSettingsError.value = error instanceof Error ? error.message : 'Nu am putut salva setările site-ului.'; }
   finally { siteSettingsSaving.value = false; }
@@ -1203,6 +1265,7 @@ onBeforeUnmount(() => {
   if (dashboardRefreshTimer) clearInterval(dashboardRefreshTimer);
   clearImportCloseTimer();
   if (deploymentToastTimer) clearTimeout(deploymentToastTimer);
+  destroyDeployScriptEditor();
 });
 </script>
 
@@ -1325,7 +1388,7 @@ onBeforeUnmount(() => {
         <section v-if="activeNav === 'Dashboard' && githubState.mode === 'managed'" class="connection-grid">
           <article class="panel github-panel">
             <div class="panel-heading"><div><div class="panel-kicker"><GitBranch :size="13" /> SOURCE CONTROL</div><h2>GitHub connection</h2></div><span class="connection-badge" :class="{ connected: githubState.connected }"><span class="status-dot" />{{ githubState.connected ? 'Connected' : 'Not connected' }}</span></div>
-            <p v-if="githubState.connected" class="connection-copy">GitHub este conectat prin Synology Connector și poate accesa repository-urile private permise în GitHub{{ githubState.account_login ? ` pentru ${githubState.account_login}` : '' }}.</p>
+            <p v-if="githubState.connected" class="connection-copy">GitHub este conectat prin Synology Connector și poate accesa repository-urile private permise în GitHub{{ githubState.account_login ? ` pentru ${githubState.account_login}` : '' }}. Webhook: {{ githubState.webhook_configured ? 'configured' : 'not configured' }}.</p>
             <p v-else class="connection-copy">Conectează GitHub prin Synology Connector. Vei fi trimis la GitHub să te autentifici și să instalezi aplicația „Synology Connector” în contul sau organizația ta.</p>
             <div class="connection-foot"><span class="muted-copy">{{ githubState.connected ? `${githubState.installations.length} installation${githubState.installations.length === 1 ? '' : 's'}` : (githubState.configuration_error || 'Ready to connect') }}</span><button class="button button-primary" type="button" @click="installGithubApp" :disabled="githubConnectState !== 'idle'">{{ githubConnectState === 'waiting' ? 'Waiting for GitHub…' : (githubState.connected ? 'Manage GitHub' : 'Connect GitHub') }} <ArrowUpRight :size="14" /></button></div>
           </article>
@@ -1387,7 +1450,7 @@ onBeforeUnmount(() => {
             <div class="site-settings-layout">
               <section class="site-settings-section"><div class="site-settings-heading"><div><div class="panel-kicker">DEPLOYMENT</div><h2>Deployment</h2></div><span class="muted-copy">{{ selectedSite.repository?.branch || 'No branch selected' }}</span></div>
                 <label class="settings-toggle-row"><span><strong>Push to deploy</strong><small>Deploy automatically after every push to the selected branch.</small></span><input v-model="siteSettingsForm.push_to_deploy" type="checkbox" /></label>
-                <label class="site-field"><span>Deploy script</span><textarea v-model="siteSettingsForm.deploy_script" rows="7" placeholder="#!/bin/sh&#10;# Optional commands executed during deployment"></textarea><small>Optional commands executed as part of the deployment. Review the script before enabling automatic deploys.</small></label>
+                <label class="site-field"><span>Deploy script</span><div class="deploy-script-editor-shell"><div class="deploy-script-editor-toolbar"><span><TerminalSquare :size="13" /> deploy.sh</span><small>Shell · {{ deployScriptLineCount }} lines</small></div><div ref="deployScriptEditor" class="deploy-script-editor" aria-label="Deployment script editor" /></div><small>Scriptul rulează ca utilizatorul pachetului. Variabile disponibile: <code>$PROJECT_ROOT</code>, <code>$CURRENT_DIR</code>, <code>$RELEASE_DIR</code>, <code>$WEB_ROOT</code>, <code>$RELEASE_ID</code> și <code>$COMMIT_SHA</code>.</small></label>
                 <label class="site-field"><span>Deployment retention</span><input v-model.number="siteSettingsForm.deployment_retention" type="number" min="0" max="100" /><small>Configure the number of previous deployments to retain after each successful deployment. Default: 4.</small></label>
               </section>
               <section class="site-settings-section"><div class="site-settings-heading"><div><div class="panel-kicker">GENERAL</div><h2>General</h2></div></div>
@@ -1439,7 +1502,7 @@ onBeforeUnmount(() => {
           </article>
           <article v-if="githubState.mode === 'managed'" class="panel settings-card">
             <div class="settings-card-heading"><span class="settings-icon"><GitBranch :size="18" /></span><div><div class="panel-kicker">SOURCE CONTROL CONNECTOR</div><h2>GitHub</h2><p>Conectează GitHub fără să creezi o aplicație proprie și fără să încarci cheia PEM pe NAS.</p></div><span class="connection-badge" :class="{ connected: githubState.connected }"><span class="status-dot" />{{ githubState.connected ? 'Connected' : 'Not connected' }}</span></div>
-            <div class="settings-form"><div class="connector-status"><span class="status-dot" :class="{ 'status-dot-warning': !githubState.connected }" /><strong>{{ githubState.connected ? 'GitHub connected through Synology Connector' : 'Connect GitHub to continue' }}</strong><small v-if="githubState.account_login">Account: {{ githubState.account_login }}</small><small v-else-if="githubState.configuration_error">{{ githubState.configuration_error }}</small></div><p class="settings-explanation">Apasă butonul, autentifică-te pe GitHub și instalează aplicația „Synology Connector” în contul sau organizația ta. Selectezi exact repository-urile private accesibile. Cheia GitHub App rămâne în serviciul connectorului, nu pe NAS.</p></div>
+            <div class="settings-form"><div class="connector-status"><span class="status-dot" :class="{ 'status-dot-warning': !githubState.connected }" /><strong>{{ githubState.connected ? 'GitHub connected through Synology Connector' : 'Connect GitHub to continue' }}</strong><small v-if="githubState.account_login">Account: {{ githubState.account_login }}</small><small v-else-if="githubState.configuration_error">{{ githubState.configuration_error }}</small><small>Webhook: {{ githubState.webhook_configured ? 'configured' : 'not configured' }} · accepted events: {{ githubState.webhook_accepted_events || 0 }}</small><small v-if="githubState.webhook_endpoint">Endpoint: {{ githubState.webhook_endpoint }}</small></div><p class="settings-explanation">Apasă butonul, autentifică-te pe GitHub și instalează aplicația „Synology Connector” în contul sau organizația ta. Selectezi exact repository-urile private accesibile. Pentru push-to-deploy, configurează în aceeași aplicație GitHub webhook-ul Push către endpointul afișat, cu același secret setat în Zion Connector ca <code>CONNECTOR_GITHUB_WEBHOOK_SECRET</code>. Secretul nu ajunge în SPK.</p></div>
             <div v-if="githubError" class="discovery-error"><CircleAlert :size="16" />{{ githubError }}</div><div v-if="githubMessage" class="discovery-success"><Check :size="16" />{{ githubMessage }}</div>
             <div class="settings-actions"><span /><button class="button button-secondary" type="button" @click="loadGithubStatus">Refresh status</button><button class="button button-primary" type="button" @click="installGithubApp" :disabled="githubConnectState !== 'idle'">{{ githubConnectState === 'waiting' ? 'Waiting for GitHub…' : (githubState.connected ? 'Manage GitHub' : 'Connect GitHub') }} <ArrowUpRight :size="14" /></button></div>
             <div class="settings-note"><CircleHelp :size="15" /><span>Acesta este modul recomandat pentru clienții Release Station: te conectezi prin aplicația GitHub „Synology Connector”, instalată în contul fiecărui client. Nu este nevoie de App ID, slug sau fișier PEM pe NAS.</span></div>

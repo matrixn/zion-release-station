@@ -4,6 +4,9 @@ Istoricul de mai jos păstrează evoluția proiectului și explică problema sau
 
 ## Unreleased
 
+- **GitHub push webhooks și auto-deploy** — Zion Connector primește webhook-uri publice, verifică HMAC `X-Hub-Signature-256`, deduplicatează delivery-urile și le asociază cu installation-ul clientului. SPK-ul face polling autentificat, filtrează strict repository-ul/installation-ul/branch-ul și `Push to deploy`, apoi rulează deploy-ul atomic cu trigger `webhook`. Aplicația nativă afișează starea webhook-ului, endpointul și numărul de evenimente acceptate.
+- **Editor de deploy și verificări** — editorul scriptului folosește CodeMirror cu shell syntax highlighting și tema dark; au fost adăugate teste pentru cursorul webhook-ului, deduplicare și contractul connectorului.
+
 - **Script atomic implicit și toolchain checks** — site-urile Atomic primesc automat un script revizuibil care pregătește `.current`, copiază release-ul în document root prin staging și rename atomic, iar scripturile personalizate salvate în Settings sunt executate cu variabilele `PROJECT_ROOT`, `CURRENT_DIR`, `RELEASE_DIR`, `WEB_ROOT`, `RELEASE_ID`, `DEPLOYMENT_ID` și `COMMIT_SHA`. Site-urile vechi primesc același script când sunt trecute pe Atomic.
 - **System Overview configurabil** — Settings permite selectarea verificărilor pentru PHP, Composer, Node.js, npm, Git, rsync, unzip, tar, curl și clientul MariaDB/MySQL. Dashboard-ul rulează verificări reale pe NAS, afișează versiunea/calea detectată și Help Center oferă comenzile și pașii DSM pentru fiecare verificare.
 - **Site history după adăugare/configurare** — după crearea unui site manual sau salvarea unui repository, aplicația deschide site-ul și încarcă imediat commiturile branch-ului configurat. Fiecare commit este comparat cu deployment history și apare ca deployed, failed sau not deployed.

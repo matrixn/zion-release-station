@@ -33,6 +33,9 @@ func main() {
 	defer db.Close()
 
 	server := httpapi.NewServer(cfg, db, logger)
+	stopContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	go server.RunBackground(stopContext)
 	go func() {
 		logger.Info("ReleaseStation started", "address", cfg.BindAddress, "version", cfg.Version)
 		if serveErr := server.ListenAndServe(); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
@@ -41,8 +44,6 @@ func main() {
 		}
 	}()
 
-	stopContext, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
-	defer stop()
 	<-stopContext.Done()
 
 	shutdownContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)

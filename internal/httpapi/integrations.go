@@ -15,23 +15,31 @@ func (s *Server) handleGitHubConnection(w http.ResponseWriter, r *http.Request) 
 
 	if !s.githubManaged.PairingConfigured() {
 		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
-			"configured":             false,
-			"mode":                   "managed",
-			"configuration_error":    s.githubManaged.ConfigurationError(),
-			"connected":              false,
-			"private_key_configured": false,
-			"installations":          []any{},
+			"configured":              false,
+			"mode":                    "managed",
+			"configuration_error":     s.githubManaged.ConfigurationError(),
+			"connected":               false,
+			"private_key_configured":  false,
+			"installations":           []any{},
+			"webhook_configured":      false,
+			"webhook_endpoint":        "",
+			"webhook_accepted_events": 0,
+			"webhook_last_event_at":   "",
 		}})
 		return
 	}
 	if !s.githubManaged.Configured() {
 		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
-			"configured":             true,
-			"mode":                   "managed",
-			"configuration_error":    "GitHub connector pairing is required",
-			"connected":              false,
-			"private_key_configured": false,
-			"installations":          []any{},
+			"configured":              true,
+			"mode":                    "managed",
+			"configuration_error":     "GitHub connector pairing is required",
+			"connected":               false,
+			"private_key_configured":  false,
+			"installations":           []any{},
+			"webhook_configured":      false,
+			"webhook_endpoint":        "",
+			"webhook_accepted_events": 0,
+			"webhook_last_event_at":   "",
 		}})
 		return
 	}
@@ -65,13 +73,17 @@ func (s *Server) handleManagedGitHubConnection(w http.ResponseWriter, r *http.Re
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
-		"configured":             true,
-		"mode":                   "managed",
-		"configuration_error":    status.Message,
-		"connected":              status.State == "connected" && len(installations) > 0,
-		"private_key_configured": false,
-		"installations":          installations,
-		"account_login":          status.AccountLogin,
+		"configured":              true,
+		"mode":                    "managed",
+		"configuration_error":     status.Message,
+		"connected":               status.State == "connected" && len(installations) > 0,
+		"private_key_configured":  false,
+		"installations":           installations,
+		"account_login":           status.AccountLogin,
+		"webhook_configured":      status.WebhookConfigured && status.Webhook.Configured,
+		"webhook_endpoint":        status.Webhook.Endpoint,
+		"webhook_accepted_events": status.Webhook.AcceptedEvents,
+		"webhook_last_event_at":   status.Webhook.LastEventAt,
 	}})
 }
 

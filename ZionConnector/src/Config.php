@@ -26,6 +26,7 @@ final readonly class Config
         public string $githubClientId,
         public string $githubClientSecret,
         public string $githubPrivateKeyPath,
+        public string $githubWebhookSecret,
         public array $returnHosts,
     ) {
     }
@@ -57,6 +58,7 @@ final readonly class Config
             githubClientId: trim((string) getenv('CONNECTOR_GITHUB_CLIENT_ID')),
             githubClientSecret: trim((string) getenv('CONNECTOR_GITHUB_CLIENT_SECRET')),
             githubPrivateKeyPath: trim((string) (getenv('CONNECTOR_GITHUB_PRIVATE_KEY_PATH') ?: dirname(__DIR__) . '/key/github-private-key.pem')),
+            githubWebhookSecret: trim((string) getenv('CONNECTOR_GITHUB_WEBHOOK_SECRET')),
             returnHosts: self::csv(getenv('CONNECTOR_RETURN_HOSTS') ?: ''),
         );
     }
@@ -108,6 +110,11 @@ final readonly class Config
             return 'The GitHub App private key is missing or unreadable.';
         }
         return '';
+    }
+
+    public function githubWebhookConfigured(): bool
+    {
+        return $this->githubWebhookSecret !== '';
     }
 
     public function isAllowedReturnUrl(string $returnUrl, string $returnHost): bool

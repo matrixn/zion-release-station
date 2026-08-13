@@ -89,6 +89,8 @@
     '            <p>Conectează GitHub prin aplicația GitHub „Synology Connector” fără să creezi o aplicație proprie și fără să încarci o cheie PEM pe NAS.</p>',
     '            <div class="zion-native-status"><span class="zion-native-dot" :class="github.connected ? \'healthy\' : \'warning\'"></span>{{ github.connected ? \'GitHub connected through Synology Connector\' : \'GitHub is not connected\' }}</div>',
     '            <p v-if="github.account_login">Account: {{ github.account_login }}</p>',
+    '            <p v-if="github.webhook_endpoint">Webhook: {{ github.webhook_configured ? \'configured\' : \'not configured\' }} · {{ github.webhook_accepted_events || 0 }} event(s) accepted.</p>',
+    '            <div v-if="github.webhook_endpoint" class="zion-native-note">Configurează în GitHub aplicația Synology Connector cu endpointul de mai sus, Content type application/json, evenimentul Push și același secret ca CONNECTOR_GITHUB_WEBHOOK_SECRET din Zion Connector. Secretul nu se introduce în SPK.</div>',
     '            <div class="zion-native-actions"><button class="zion-native-button" type="button" @click="loadGithub">Refresh status</button><button class="zion-native-button primary" type="button" @click="openWorkspace">Open workspace ↗</button></div>',
     '            <div class="zion-native-note">Pașii se deschid în GitHub: autentificare, alegerea contului/organizației și selectarea repository-urilor private. Cheia aplicației rămâne în Synology Connector.</div>',
     '          </article>',
@@ -147,7 +149,8 @@
           return [
             { label: 'Synology Connector available', ok: Boolean(this.github.configured) },
             { label: 'GitHub authorization complete', ok: Boolean(this.github.connected) },
-            { label: 'Private repositories available', ok: Boolean(this.github.connected) }
+            { label: 'Private repositories available', ok: Boolean(this.github.connected) },
+            { label: 'GitHub webhook configured', ok: Boolean(this.github.webhook_configured) }
           ];
         }
         return [
