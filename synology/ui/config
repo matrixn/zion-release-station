@@ -2,7 +2,7 @@
   "ZionReleaseStation.js": {
     "SYNO.ZionReleaseStation.Instance": {
       "type": "app",
-      "title": "Zion ReleaseStation",
+      "title": "Zion Release Station",
       "appWindow": "SYNO.ZionReleaseStation.Instance",
       "allUsers": true,
       "allowMultiInstance": false,

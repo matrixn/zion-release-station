@@ -14,7 +14,7 @@ ReleaseStation instalat pe Synology
             GitHub
 ```
 
-El permite utilizatorului final să apese **Connect GitHub** în aplicația ReleaseStation, să se autentifice în GitHub și să instaleze aplicația Zion în contul sau organizația sa. Utilizatorul nu trebuie să își creeze propria GitHub App și nu trebuie să încarce fișierul `.pem` pe NAS.
+El permite utilizatorului final să apese **Connect GitHub**, să se conecteze la GitHub prin aplicația GitHub **Synology Connector** și să selecteze repository-urile din contul sau organizația sa. Utilizatorul nu trebuie să își creeze propria aplicație și nu trebuie să încarce fișierul `.pem` pe NAS.
 
 Cheia privată GitHub App rămâne exclusiv în Zion Connector. SPK-ul nu trebuie să conțină această cheie.
 
@@ -42,7 +42,7 @@ Dacă variabilele managed lipsesc, butonul rămâne vizibil, dar acțiunea va in
 SPK-ul comercial nu primește App ID, client secret, `.pem` sau PAT. El cunoaște doar URL-ul connectorului, de exemplu `https://connect.example.com`.
 
 1. ReleaseStation apelează `POST /pairing/sessions` fără credential și trimite doar `instance_id`.
-2. Connectorul creează o sesiune de 10 minute, returnează un `poll_token` de unică folosință și trimite utilizatorul la instalarea aplicației Zion în GitHub.
+2. Connectorul creează o sesiune de 10 minute, returnează un `poll_token` de unică folosință și trimite utilizatorul la instalarea aplicației GitHub **Synology Connector**.
 3. Callback-ul verifică OAuth-ul, utilizatorul și installation-ul GitHub, apoi afișează o pagină neutră pe connector. Nu redirecționează către domeniul Zion sau către un URL al clientului.
 4. ReleaseStation verifică `GET /pairing/sessions/{session_id}/status?pairing_token=...` prin API-ul local, schimbă codul autorizat prin `POST /pairing/exchange` și salvează credentialul primit în `/var/packages/zion-releasestation/var/connector.json` cu `0600`.
 

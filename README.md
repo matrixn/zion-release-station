@@ -41,9 +41,9 @@ MVP-ul trebuie să includă:
 
 ### GitHub connector managed pentru clienți
 
-Fluxul recomandat pentru produsul livrat este connectorul Zion managed. Clientul apasă **Connect GitHub** în aplicația nativă, se autentifică în GitHub, instalează aplicația Zion în contul sau organizația sa și selectează explicit repository-urile permise. Clientul nu creează o GitHub App proprie și nu încarcă o cheie `.pem` pe NAS.
+Fluxul recomandat pentru produsul livrat este connectorul managed. Clientul apasă **Connect GitHub**, se conectează la GitHub prin aplicația GitHub **Synology Connector**, apoi selectează explicit repository-urile permise. Clientul nu creează o aplicație proprie și nu încarcă o cheie `.pem` pe NAS.
 
-SPK-ul comunică prin HTTPS cu serviciul connector Zion. Cheia privată a aplicației GitHub rămâne exclusiv în serviciul Zion; NAS-ul primește doar metadata și credențiale temporare necesare pentru operațiile autorizate. Provisionarea este făcută de serviciul de licențiere/connector, nu din interfața utilizatorului:
+SPK-ul comunică prin HTTPS cu serviciul managed Zion Connector. Cheia privată a aplicației GitHub rămâne exclusiv în serviciul Zion Connector; NAS-ul primește doar metadata și credențiale temporare necesare pentru operațiile autorizate. Provisionarea este făcută de serviciul de connector, nu din interfața utilizatorului:
 
 ```env
 RS_INSTANCE_ID=instance-issued-by-zion
@@ -64,11 +64,32 @@ Serviciul nu păstrează PAT-uri și nu expune installation token-ul prin API. T
 - management de environment/secrets fără returnarea valorilor salvate în API;
 - build reproductibil `.spk`, validare și artefacte de release.
 
-### Pairing GitHub pentru pachetul livrat
+### Upgrade și setări importante
 
-În pachetul livrat clientului este necesar doar URL-ul public al connectorului. La prima apăsare pe **Connect GitHub**, ReleaseStation generează automat un `instance_id`, deschide pairing-ul public și primește credentialul numai după autorizarea aplicației Zion în GitHub.
+Upgrade-ul recomandat se face prin task-ul NAS:
 
-Credentialul este salvat în directorul runtime DSM (`connector.json`, mod `0600`), nu în SPK și nu în setările editabile din UI. Cheia `.pem`, App ID-ul, client secret-ul și installation token-urile rămân exclusiv în connectorul Zion.
+    source .env.nas
+    PATH=/tmp/zion-go/bin:$PATH make deploy-nas
+
+Build-ul creează și instalează SPK-ul pe Synology, iar migrațiile SQLite sunt aplicate automat la pornirea serviciului. Nu șterge baza de date pentru un upgrade normal. Migrarea pentru setările per site adaugă framework custom, tags, color, push-to-deploy, deploy script și deployment retention.
+
+Pentru conexiunea GitHub managed:
+
+1. Configurează URL-ul public al Synology Connector în RS_GITHUB_CONNECTOR_URL.
+2. Lasă connectorul să provision-eze credentialul instanței; nu pune App ID, PEM sau PAT în SPK.
+3. Apasă **Connect GitHub** în Release Station.
+4. Autentifică-te în GitHub prin aplicația GitHub **Synology Connector**, alege contul sau organizația și aprobă repository-urile.
+5. Revino în Release Station și apasă refresh pentru repository-uri și branches.
+
+Pentru site-uri noi sau importate, configurează repository-ul în tabul **Repository**. În **Overview**, commiturile sunt încărcate automat după prima deschidere și sunt marcate în funcție de deployment history. Ordinea taburilor este **Overview**, **Deployments**, **Repository**, **Settings**.
+
+Atomic deployment folosește structura /project-root/.zion/releases/<release-id> și activează release-ul prin project-root/current. Web Station trebuie să aibă document root-ul configurat la current; astfel site-ul servește release-ul activ fără să schimbe manual configurația serverului. În implementarea actuală, scripturile Composer/npm/migrations configurate în Settings sunt salvate pentru pipeline-ul următor și nu sunt încă executate automat.
+
+Interfața web folosește iconița pachetului DSM ca favicon prin /webman/3rdparty/zion-releasestation/images/app_64.png. Dacă browserul păstrează vechea cerere /favicon.ico, fă un hard refresh după instalarea noului SPK.
+
+În pachetul livrat clientului este necesar doar URL-ul public al connectorului. La prima apăsare pe **Connect GitHub**, Release Station generează automat un `instance_id`, deschide pairing-ul public și primește credentialul numai după autorizarea aplicației GitHub **Synology Connector**.
+
+Credentialul este salvat în directorul runtime DSM (`connector.json`, mod `0600`), nu în SPK și nu în setările editabile din UI. Cheia `.pem`, App ID-ul, client secret-ul și installation token-urile rămân exclusiv în Synology Connector.
 
 ```env
 RS_GITHUB_CONNECTOR_URL=https://connect.example.com

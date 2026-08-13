@@ -7,7 +7,7 @@ version="${VERSION:-0.1.0}-${BUILD_NUMBER:-0}"
 cat <<EOF
 package="$package"
 version="$version"
-displayname="Zion ReleaseStation"
+displayname="Zion Release Station"
 description="Git deployment and release management for Synology DSM."
 maintainer="Zion"
 arch="x86_64"

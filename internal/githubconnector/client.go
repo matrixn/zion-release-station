@@ -250,12 +250,14 @@ func (c *Client) Commits(ctx context.Context, installationID int64, fullName, br
 	query.Set("installation_id", fmt.Sprintf("%d", installationID))
 	query.Set("branch", strings.TrimSpace(branch))
 	query.Set("per_page", fmt.Sprintf("%d", perPage))
-	var response []Commit
+	var response struct {
+		Commits []Commit `json:"commits"`
+	}
 	endpoint := c.path("github/repositories/"+url.PathEscape(parts[0])+"/"+url.PathEscape(parts[1])+"/commits") + "?" + query.Encode()
 	if err := c.request(ctx, http.MethodGet, endpoint, nil, &response); err != nil {
 		return nil, fmt.Errorf("read managed GitHub commits: %w", err)
 	}
-	return response, nil
+	return response.Commits, nil
 }
 
 func (c *Client) ResolveCommit(ctx context.Context, installationID int64, fullName, ref string) (Commit, error) {

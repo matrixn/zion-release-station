@@ -64,7 +64,7 @@
     '          <div class="zion-native-intro"><h1>ReleaseStation control plane</h1><p>Manage activation and package configuration here. The full deployment workspace remains available through the web fallback.</p></div>',
     '          <div class="zion-native-grid">',
     '            <article class="zion-native-card"><h2>Package health</h2><div class="zion-native-status"><span class="zion-native-dot" :class="healthClass"></span>{{ healthTitle }}</div><p>{{ healthDetail }}</p><div class="zion-native-actions"><button class="zion-native-button" type="button" @click="checkHealth">Refresh</button></div></article>',
-    '            <article class="zion-native-card github-connection-card"><h2>GitHub App connection</h2><ul class="zion-native-checks"><li v-for="check in githubChecks" :key="check.label" class="zion-native-check" :class="check.ok ? \'ok\' : \'warn\'"><b>{{ check.ok ? \'✓\' : \'!\' }}</b><span>{{ check.label }}</span></li></ul><p>{{ githubSummary }}</p><div class="zion-native-actions"><button class="zion-native-button" type="button" @click="loadGithub">Refresh</button><button class="zion-native-button primary" type="button" @click="tab = \'settings\'">Configure</button></div></article>',
+    '            <article class="zion-native-card github-connection-card"><h2>Synology Connector</h2><ul class="zion-native-checks"><li v-for="check in githubChecks" :key="check.label" class="zion-native-check" :class="check.ok ? \'ok\' : \'warn\'"><b>{{ check.ok ? \'✓\' : \'!\' }}</b><span>{{ check.label }}</span></li></ul><p>{{ githubSummary }}</p><div class="zion-native-actions"><button class="zion-native-button" type="button" @click="loadGithub">Refresh</button><button class="zion-native-button primary" type="button" @click="tab = \'settings\'">Configure</button></div></article>',
     '            <article class="zion-native-card"><h2>Runtime</h2><dl class="zion-native-list"><div><dt>Version</dt><dd>{{ health.version || \'—\' }}</dd></div><div><dt>Platform</dt><dd>{{ health.platform || \'—\' }}</dd></div><div><dt>Database</dt><dd>{{ health.database || \'—\' }}</dd></div><div><dt>API</dt><dd>127.0.0.1:24871</dd></div></dl></article>',
     '          </div>',
     '        </div>',
@@ -86,14 +86,14 @@
     '          </article>',
     '          <article v-if="github.mode === \'managed\'" class="zion-native-card zion-native-github-settings">',
     '            <h2>GitHub connection</h2>',
-    '            <p>Conectează GitHub prin aplicația Zion fără să creezi o GitHub App proprie și fără să încarci o cheie PEM pe NAS.</p>',
-    '            <div class="zion-native-status"><span class="zion-native-dot" :class="github.connected ? \'healthy\' : \'warning\'"></span>{{ github.connected ? \'GitHub connected through Zion\' : \'GitHub is not connected\' }}</div>',
+    '            <p>Conectează GitHub prin aplicația GitHub „Synology Connector” fără să creezi o aplicație proprie și fără să încarci o cheie PEM pe NAS.</p>',
+    '            <div class="zion-native-status"><span class="zion-native-dot" :class="github.connected ? \'healthy\' : \'warning\'"></span>{{ github.connected ? \'GitHub connected through Synology Connector\' : \'GitHub is not connected\' }}</div>',
     '            <p v-if="github.account_login">Account: {{ github.account_login }}</p>',
     '            <div class="zion-native-actions"><button class="zion-native-button" type="button" @click="loadGithub">Refresh status</button><button class="zion-native-button primary" type="button" @click="openWorkspace">Open workspace ↗</button></div>',
-    '            <div class="zion-native-note">Pașii se deschid în GitHub: autentificare, alegerea contului/organizației și selectarea repository-urilor private. Cheia aplicației rămâne în serviciul Zion.</div>',
+    '            <div class="zion-native-note">Pașii se deschid în GitHub: autentificare, alegerea contului/organizației și selectarea repository-urilor private. Cheia aplicației rămâne în Synology Connector.</div>',
     '          </article>',
     '          <article v-if="github.mode !== \'managed\'" class="zion-native-card zion-native-github-settings">',
-    '            <h2>GitHub App connector</h2>',
+    '            <h2>Synology Connector</h2>',
     '            <p>Configurează aici App-ul GitHub pentru acces la repository-uri private. Nu introduci PAT; ReleaseStation folosește tokenuri temporare de instalare.</p>',
     '            <form class="zion-native-form" @submit.prevent="saveGithubConfig">',
     '              <label>GitHub App ID<input v-model.trim="githubConfig.app_id" type="text" placeholder="123456" autocomplete="off"><small>ID-ul numeric din pagina GitHub App.</small></label>',
@@ -121,7 +121,7 @@
         healthState: 'checking',
         webAccessEnabled: true,
         webAccessState: 'loading',
-        github: { mode: 'managed', configured: false, connected: false, installations: [], configuration_error: 'Zion Connector is not provisioned for this ReleaseStation instance' },
+        github: { mode: 'managed', configured: false, connected: false, installations: [], configuration_error: 'Synology Connector is not provisioned for this Release Station instance' },
         githubConfig: { app_id: '', app_slug: '', setup_url: '' },
         githubConfigState: 'loading',
         githubMessage: ''
@@ -145,7 +145,7 @@
       githubChecks: function () {
         if (this.github.mode === 'managed') {
           return [
-            { label: 'Zion managed connector available', ok: Boolean(this.github.configured) },
+            { label: 'Synology Connector available', ok: Boolean(this.github.configured) },
             { label: 'GitHub authorization complete', ok: Boolean(this.github.connected) },
             { label: 'Private repositories available', ok: Boolean(this.github.connected) }
           ];
@@ -218,7 +218,7 @@
             self.githubConfig = { app_id: self.github.app_id || '', app_slug: self.github.app_slug || '', setup_url: self.github.setup_url || (window.location.origin + '/releasestation/api/v1/integrations/github/setup') };
             self.githubConfigState = 'saved';
           })
-          .catch(function () { self.github = { mode: 'managed', configured: false, connected: false, installations: [], configuration_error: 'Zion Connector is not provisioned for this ReleaseStation instance' }; self.githubConfigState = 'error'; self.githubMessage = 'Zion Connector nu este provisionat pentru această instanță.'; });
+          .catch(function () { self.github = { mode: 'managed', configured: false, connected: false, installations: [], configuration_error: 'Synology Connector is not provisioned for this Release Station instance' }; self.githubConfigState = 'error'; self.githubMessage = 'Synology Connector nu este provisionat pentru această instanță.'; });
       },
       completeGithubPairing: function () {
         var pairingCode = new URLSearchParams(window.location.search).get('pairing_code');
