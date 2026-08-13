@@ -83,7 +83,7 @@ final class DebugLogger
             'status' => $status,
             'request_headers_json' => $this->encode($this->redactHeaders($headers)),
             'request_body' => $this->redactBody($requestBody),
-            'response_headers_json' => $this->encode($this->redactHeaders($responseHeaders)),
+            'response_headers_json' => $this->encode(array_is_list($responseHeaders) ? $this->responseHeaders(array_values(array_filter($responseHeaders, 'is_string'))) : $this->redactHeaders($responseHeaders)),
             'response_body' => $this->redactBody($responseBody),
             'duration_ms' => $durationMs,
             'created_at' => gmdate('c'),
