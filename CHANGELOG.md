@@ -4,6 +4,8 @@ Istoricul de mai jos păstrează evoluția proiectului și explică problema sau
 
 ## Unreleased
 
+- **Atomic wrapper-directory fix** — default deployment now ignores hidden repository metadata when detecting a single visible GitHub archive wrapper directory. The application files are published directly into the Web Station document root, while useful root-level dotfiles are preserved.
+
 - **Zion Connector Debug Console** — când `APP_DEBUG=1`, connectorul expune `/admin` cu filtrare, auto-refresh, expand pe rând și code coloring pentru headers/body. Sunt urmărite requesturile inbound de la Synology și GitHub, răspunsurile connectorului și requesturile outbound către GitHub, cu metode, statusuri și durate.
 - **Debug safety** — logurile sunt persistente în MariaDB/SQLite, body-urile sunt limitate la 128 KiB, arhivele binare sunt omise, iar Authorization, cookies, token-uri, parole, secrets, private keys și pairing codes sunt redactate. Cu `APP_DEBUG=0`, consola și API-ul admin sunt dezactivate prin `404`.
 

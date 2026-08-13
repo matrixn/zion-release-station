@@ -125,17 +125,23 @@ mkdir -p "$STATE_DIR" "$TARGET_DIR"
 rm -rf "$STAGING_DIR"
 mkdir -p "$STAGING_DIR"
 CONTENT_DIR="$SOURCE_DIR"
-TOP_LEVEL_COUNT=0
-TOP_LEVEL_DIR=""
-for ITEM in "$SOURCE_DIR"/* "$SOURCE_DIR"/.[!.]* "$SOURCE_DIR"/..?*; do
+VISIBLE_ENTRY_COUNT=0
+VISIBLE_DIR=""
+for ITEM in "$SOURCE_DIR"/*; do
 	[ -e "$ITEM" ] || [ -L "$ITEM" ] || continue
-	TOP_LEVEL_COUNT=$((TOP_LEVEL_COUNT + 1))
-	TOP_LEVEL_DIR="$ITEM"
+	VISIBLE_ENTRY_COUNT=$((VISIBLE_ENTRY_COUNT + 1))
+	VISIBLE_DIR="$ITEM"
 done
-if [ "$TOP_LEVEL_COUNT" -eq 1 ] && [ -d "$TOP_LEVEL_DIR" ]; then
-	CONTENT_DIR="$TOP_LEVEL_DIR"
+if [ "$VISIBLE_ENTRY_COUNT" -eq 1 ] && [ -d "$VISIBLE_DIR" ]; then
+	CONTENT_DIR="$VISIBLE_DIR"
 fi
 cp -a "$CONTENT_DIR"/. "$STAGING_DIR"/
+if [ "$CONTENT_DIR" != "$SOURCE_DIR" ]; then
+	for ITEM in "$SOURCE_DIR"/.[!.]* "$SOURCE_DIR"/..?*; do
+		[ -e "$ITEM" ] || [ -L "$ITEM" ] || continue
+		cp -a "$ITEM" "$STAGING_DIR"/
+	done
+fi
 
 rm -rf "$BACKUP_DIR"
 mkdir -p "$BACKUP_DIR"

@@ -123,6 +123,9 @@ func TestDefaultAtomicScriptPublishesSingleRepositoryDirectoryToDocumentRoot(t *
 	if err := os.WriteFile(filepath.Join(current, "matrixn-sample-wordpress-plugin-9e5a26a", "index.php"), []byte("<?php echo 'ready';"), 0o644); err != nil {
 		t.Fatalf("write prepared release: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(current, ".gitignore"), []byte("/vendor/\n"), 0o644); err != nil {
+		t.Fatalf("write prepared hidden file: %v", err)
+	}
 	if err := os.MkdirAll(filepath.Join(root, ".zion", "releases"), 0o700); err != nil {
 		t.Fatalf("create release state: %v", err)
 	}
@@ -141,6 +144,9 @@ func TestDefaultAtomicScriptPublishesSingleRepositoryDirectoryToDocumentRoot(t *
 	}
 	if _, err := os.Stat(filepath.Join(root, "matrixn-sample-wordpress-plugin-9e5a26a")); !os.IsNotExist(err) {
 		t.Fatalf("repository wrapper directory should not be published: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, ".gitignore")); err != nil {
+		t.Fatalf("hidden application file should be published: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(root, "old.php")); !os.IsNotExist(err) {
 		t.Fatalf("old document-root file should be replaced: %v", err)
