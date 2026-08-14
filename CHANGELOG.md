@@ -4,6 +4,9 @@ Istoricul de mai jos păstrează evoluția proiectului și explică problema sau
 
 ## Unreleased
 
+- **Milestone 6 — Automation** — Added direct GitHub/GitLab webhooks with HMAC/token validation, payload limits, repository/branch checks, replay protection, encrypted runtime credentials, automatic queueing, and the `latest` pending policy.
+- **Automation UI and audit** — Added per-site webhook generation/rotation with one-time secret display plus an Activity timeline for verified webhook events and automatic deployments.
+
 - **Milestone 5 — Release Management** — Atomic sites now support configurable shared directories under `.zion/shared`, optional post-activation HTTP(S) health checks, automatic rollback after a failed health check, release history, manual rollback with a clear database-migration warning, and safe release retention that never removes the active release.
 - **Release Management UI** — site Overview now includes a visual release timeline with Current/Previous labels, health state, commit context and a per-release Rollback action. Settings exposes the health check URL and shared directories with validation and explanatory copy.
 

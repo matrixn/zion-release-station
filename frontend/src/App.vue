@@ -86,6 +86,7 @@ type GithubRepository = {
 type GithubInstallation = { github_installation_id: number; account_login: string; account_type: string; repository_selection: string; };
 type Deployment = { id: string; site_id: string; trigger_type: string; trigger_reference?: string; deployment_method?: string; branch: string; commit_sha: string; commit_message: string; commit_url: string; status: string; error_code?: string; error_summary?: string; queued_at: string; started_at?: string; finished_at?: string; duration_ms?: number; created_at: string; build_log?: string; deployment_log?: string; steps?: { id: string; step_key: string; name: string; status: string; duration_ms?: number }[]; };
 type Release = { id: string; site_id: string; deployment_id: string; release_name: string; release_path: string; commit_sha?: string; commit_message?: string; commit_url?: string; branch?: string; active: boolean; health_status?: string; created_at: string; activated_at?: string; };
+type SiteWebhook = { id?: string; site_id: string; provider: string; enabled: boolean; configured: boolean; secret_configured: boolean; endpoint?: string; last_delivery_at?: string; last_error?: string };
 type Commit = { sha: string; message: string; branch: string; author?: string; url?: string; created_at?: string; deployed: boolean; included_in_deployed?: boolean; deployment_id?: string; status: string; };
 
 type GithubState = {
@@ -120,7 +121,7 @@ const navigationStorageKey = 'zion-releasestation-navigation';
 function readStoredNavigation() {
   try {
     const value = localStorage.getItem(navigationStorageKey);
-    return ['Dashboard', 'Sites', 'Settings', 'Help'].includes(value || '') ? value || 'Dashboard' : 'Dashboard';
+    return ['Dashboard', 'Sites', 'Activity', 'Settings', 'Help'].includes(value || '') ? value || 'Dashboard' : 'Dashboard';
   } catch {
     return 'Dashboard';
   }
@@ -210,6 +211,12 @@ const repositoryForm = ref({
 const siteSettingsSaving = ref(false);
 const siteSettingsMessage = ref('');
 const siteSettingsError = ref('');
+const siteWebhook = ref<SiteWebhook>({ site_id: '', provider: 'github', enabled: false, configured: false, secret_configured: false });
+const siteWebhookLoading = ref(false);
+const siteWebhookRotating = ref(false);
+const siteWebhookSecret = ref('');
+const siteWebhookMessage = ref('');
+const siteWebhookError = ref('');
 const siteTagDraft = ref('');
 const siteSettingsForm = ref({
   framework: 'other',
@@ -235,7 +242,10 @@ type DashboardMetrics = {
   latest?: { deployment_id: string; site_id: string; site_name: string; status: string; branch: string; commit_sha: string; commit_message: string; created_at: string; duration_ms: number };
   services: { id: string; label: string; state: string; detail: string; command?: string; description?: string; install_hint?: string; version?: string }[];
 };
+type AuditEntry = { id: string; actor_type: string; actor_id?: string; action: string; entity_type?: string; entity_id?: string; metadata?: Record<string, any>; created_at: string };
 const dashboardMetrics = ref<DashboardMetrics>({ successful_deploys: 0, total_deploys: 0, median_duration_ms: 0, running_deploys: 0, queued_deploys: 0, queue_status: 'idle', services: [] });
+const auditEntries = ref<AuditEntry[]>([]);
+const auditLoading = ref(false);
 const deploymentNotice = ref<{ id: string; siteID: string; siteName: string; status: string; progress: number; message: string } | null>(null);
 type SystemCheckSetting = { id: string; label: string; command: string; description: string; install_hint: string; enabled: boolean };
 const systemChecks = ref<SystemCheckSetting[]>([]);
@@ -313,8 +323,6 @@ function emptyGithubState(): GithubState {
 const navItems = computed(() => [
   { label: 'Dashboard', icon: LayoutDashboard },
   { label: 'Sites', icon: Globe2, count: sites.value.length || undefined },
-  { label: 'Deployments', icon: UploadCloud, count: 0 },
-  { label: 'Releases', icon: PackageCheck },
   { label: 'Activity', icon: Activity },
 ]);
 
@@ -504,6 +512,20 @@ async function loadDashboardMetrics() {
   }
 }
 
+async function loadAuditLogs() {
+  auditLoading.value = true;
+  try {
+    const response = await fetch('/releasestation/api/v1/audit-logs', { headers: { Accept: 'application/json' } });
+    if (!response.ok) throw new Error('audit');
+    const payload = await response.json();
+    auditEntries.value = payload.data || [];
+  } catch {
+    // Audit remains read-only and non-blocking when the API is upgrading.
+  } finally {
+    auditLoading.value = false;
+  }
+}
+
 async function loadSystemChecks() {
   systemChecksLoading.value = true;
   try {
@@ -636,7 +658,52 @@ function openSiteSettings() {
   siteSettingsMessage.value = '';
   siteSettingsError.value = '';
   selectedSiteTab.value = 'Settings';
+  loadSiteWebhook();
   nextTick(mountDeployScriptEditor);
+}
+
+async function loadSiteWebhook() {
+  if (!selectedSite.value) return;
+  siteWebhookLoading.value = true;
+  siteWebhookError.value = '';
+  try {
+    const response = await fetch(`/releasestation/api/v1/sites/${selectedSite.value.id}/webhook`, { headers: { Accept: 'application/json' } });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut încărca setarea webhook.');
+    siteWebhook.value = payload.data || { site_id: selectedSite.value.id, provider: 'github', enabled: false, configured: false, secret_configured: false };
+  } catch (error) {
+    siteWebhookError.value = error instanceof Error ? error.message : 'Nu am putut încărca setarea webhook.';
+  } finally {
+    siteWebhookLoading.value = false;
+  }
+}
+
+async function rotateSiteWebhook() {
+  if (!selectedSite.value) return;
+  const provider = selectedSite.value.repository?.provider === 'gitlab' ? 'gitlab' : 'github';
+  if (!window.confirm('Generezi credențiale noi? Secretul vechi va fi invalidat imediat.')) return;
+  siteWebhookRotating.value = true;
+  siteWebhookMessage.value = '';
+  siteWebhookError.value = '';
+  siteWebhookSecret.value = '';
+  try {
+    const response = await fetch(`/releasestation/api/v1/sites/${selectedSite.value.id}/webhook`, { method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ provider }) });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut genera webhook-ul.');
+    siteWebhook.value = payload.data?.webhook || siteWebhook.value;
+    siteWebhookSecret.value = payload.data?.secret || '';
+    siteWebhookMessage.value = 'Webhook-ul este activ. Copiază secretul acum și configurează-l în provider.';
+  } catch (error) {
+    siteWebhookError.value = error instanceof Error ? error.message : 'Nu am putut genera webhook-ul.';
+  } finally {
+    siteWebhookRotating.value = false;
+  }
+}
+
+async function copyWebhookValue(value: string) {
+  if (!value) return;
+  await navigator.clipboard?.writeText(value);
+  siteWebhookMessage.value = 'Valoarea a fost copiată în clipboard.';
 }
 
 const deployScriptLineCount = computed(() => Math.max(1, siteSettingsForm.value.deploy_script.split('\n').length));
@@ -1454,6 +1521,7 @@ onMounted(() => {
   checkHealth();
   loadSites();
   loadDashboardMetrics();
+  loadAuditLogs();
   loadSystemChecks();
   loadWebStationStatus();
   loadGithubStatus();
@@ -1461,6 +1529,7 @@ onMounted(() => {
     checkHealth();
     loadSites();
     loadDashboardMetrics();
+    loadAuditLogs();
     loadWebStationStatus();
   }, 5000);
 });
@@ -1500,7 +1569,7 @@ onBeforeUnmount(() => {
       <div class="sidebar-section-label sidebar-section-spaced">Manage</div>
       <nav class="primary-nav" aria-label="Management navigation">
         <button class="nav-item" type="button"><TerminalSquare :size="17" /><span>Pipelines</span></button>
-        <button class="nav-item" type="button"><Webhook :size="17" /><span>Webhooks</span></button>
+        <button class="nav-item" type="button" @click="activeNav = 'Sites'"><Webhook :size="17" /><span>Webhooks</span></button>
         <button class="nav-item" type="button"><ShieldCheck :size="17" /><span>Secrets</span><span class="nav-dot" /></button>
       </nav>
 
@@ -1612,6 +1681,11 @@ onBeforeUnmount(() => {
           </article>
         </section>
 
+        <section v-if="activeNav === 'Activity'" class="activity-view">
+          <div class="sites-management-header"><div><div class="eyebrow"><span class="eyebrow-pulse" /> AUTOMATION AUDIT</div><h1>Activity.</h1><p class="hero-copy">Every webhook verification and automatic deployment is recorded without storing payloads or secrets.</p></div><button class="button button-secondary" type="button" @click="loadAuditLogs"><RotateCw :size="15" :class="{ spin: auditLoading }" />Refresh</button></div>
+          <section class="panel audit-panel"><div class="panel-heading"><div><div class="panel-kicker">RECENT EVENTS</div><h2>Automation timeline</h2></div><span class="muted-copy">{{ auditEntries.length }} recent events</span></div><div v-if="auditEntries.length" class="audit-list"><article v-for="entry in auditEntries" :key="entry.id" class="audit-row"><span class="audit-marker" :class="entry.action.includes('rejected') || entry.action.includes('failed') ? 'danger' : 'success'"><CircleX v-if="entry.action.includes('rejected') || entry.action.includes('failed')" :size="13" /><Check v-else :size="13" /></span><div class="audit-copy"><strong>{{ entry.action }}</strong><small>{{ entry.actor_type }}{{ entry.actor_id ? ` · ${entry.actor_id}` : '' }}{{ entry.entity_id ? ` · ${entry.entity_type}: ${entry.entity_id}` : '' }}</small><small v-if="entry.metadata?.provider || entry.metadata?.branch">{{ entry.metadata?.provider || '' }}{{ entry.metadata?.branch ? ` · ${entry.metadata.branch}` : '' }}{{ entry.metadata?.commit ? ` · ${String(entry.metadata.commit).slice(0, 7)}` : '' }}</small></div><time>{{ relativeTime(entry.created_at) }}</time></article></div><div v-else class="management-empty"><Activity :size="22" /><strong>No automation events yet</strong><span>Generate a site webhook and send a verified push to see the audit trail here.</span></div></section>
+        </section>
+
         <section v-if="activeNav === 'Dashboard'" class="section-heading"><div><div class="panel-kicker">YOUR SURFACE</div><h2>Managed sites</h2></div><button class="text-button" type="button" @click="activeNav = 'Sites'">View all sites <ArrowUpRight :size="15" /></button></section>
         <section v-if="activeNav === 'Dashboard'" class="sites-grid">
           <article v-if="sites.length === 0" class="site-card empty-site-card">
@@ -1671,6 +1745,18 @@ onBeforeUnmount(() => {
                 <label class="site-field"><span>Deployment retention</span><input v-model.number="siteSettingsForm.deployment_retention" type="number" min="0" max="100" /><small>Configure the number of previous releases to retain after each successful deployment. Default: 4. The current release is always protected.</small></label>
                 <label class="site-field"><span>Health check URL</span><input v-model="siteSettingsForm.health_check_url" type="url" placeholder="https://example.com/health" /><small>Optional HTTP(S) URL checked after activation. A failed check triggers automatic rollback to the previous release.</small></label>
                 <div class="site-field"><span>Shared directories</span><div class="tag-editor"><span v-for="directory in siteSettingsForm.shared_directories" :key="directory" class="tag-badge shared-directory-badge">{{ directory }}<button type="button" :aria-label="`Remove shared directory ${directory}`" @click="removeSharedDirectory(directory)"><X :size="11" /></button></span><input v-model="sharedDirectoryDraft" type="text" placeholder="storage/ and press Enter" @keydown="onSharedDirectoryKeydown" /></div><small>Directories persist in <code>.zion/shared</code> across releases and are linked into every activated release. Use relative paths such as <code>storage</code> or <code>uploads</code>.</small></div>
+                <div class="automation-card">
+                  <div class="automation-card-heading"><span class="settings-icon"><Webhook :size="17" /></span><div><strong>Push automation</strong><small>Webhook direct pentru GitHub sau GitLab. Deploy-ul pornește numai după validarea semnăturii, repository-ului și branch-ului.</small></div><span v-if="siteWebhook.configured" class="connection-badge connected"><span class="status-dot" />{{ siteWebhook.provider }} ready</span><span v-else class="connection-badge"><span class="status-dot" />Not configured</span></div>
+                  <div v-if="siteWebhookLoading" class="detail-loading"><RotateCw :size="15" class="spin" /> Loading webhook configuration…</div>
+                  <template v-else>
+                    <div v-if="siteWebhook.configured" class="webhook-endpoint-grid"><label class="site-field"><span>Webhook endpoint</span><div class="copy-input"><input :value="siteWebhook.endpoint" readonly @click="copyWebhookValue(siteWebhook.endpoint || '')" /><button type="button" title="Copy webhook endpoint" @click="copyWebhookValue(siteWebhook.endpoint || '')"><ArrowUpRight :size="13" /></button></div></label><label v-if="siteWebhookSecret" class="site-field"><span>Secret — shown once</span><div class="copy-input"><input :value="siteWebhookSecret" readonly @click="copyWebhookValue(siteWebhookSecret)" /><button type="button" title="Copy webhook secret" @click="copyWebhookValue(siteWebhookSecret)"><ArrowUpRight :size="13" /></button></div></label></div>
+                    <div v-if="siteWebhookSecret" class="webhook-secret-warning"><CircleAlert :size="14" /><span>Salvează secretul în setarea Webhook din GitHub/GitLab. Nu este stocat în SPK și nu va mai fi afișat după ce părăsești această pagină.</span></div>
+                    <div v-if="siteWebhook.last_delivery_at || siteWebhook.last_error" class="webhook-health-line"><span><strong>Last delivery</strong>{{ siteWebhook.last_delivery_at ? relativeTime(siteWebhook.last_delivery_at) : 'No valid delivery yet' }}</span><span v-if="siteWebhook.last_error" class="webhook-error"><CircleX :size="13" />{{ siteWebhook.last_error }}</span></div>
+                    <p v-if="!siteWebhook.configured" class="settings-explanation">Generează un endpoint per site, apoi în provider alege evenimentul <strong>Push</strong>. Secretul este criptat la runtime pe NAS; Release Station aplică politica <strong>latest</strong>, păstrând doar ultimul commit care încă așteaptă să fie executat.</p>
+                    <div class="settings-actions"><span class="muted-copy">{{ siteWebhook.configured ? 'Rotate invalidates the previous secret.' : 'No external webhook is active.' }}</span><button class="button button-secondary" type="button" :disabled="siteWebhookRotating" @click="rotateSiteWebhook">{{ siteWebhookRotating ? 'Generating…' : (siteWebhook.configured ? 'Rotate credentials' : 'Generate webhook') }} <Webhook :size="14" /></button></div>
+                  </template>
+                  <div v-if="siteWebhookError" class="discovery-error"><CircleAlert :size="14" />{{ siteWebhookError }}</div><div v-if="siteWebhookMessage" class="discovery-success"><Check :size="14" />{{ siteWebhookMessage }}</div>
+                </div>
               </section>
               <section class="site-settings-section"><div class="site-settings-heading"><div><div class="panel-kicker">GENERAL</div><h2>General</h2></div></div>
                 <label class="site-field"><span>Framework</span><select v-model="siteSettingsForm.framework"><option v-for="option in frameworkSettingOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><small>The framework used by the installed application. Changing the framework does not modify the Nginx/apache configuration.</small></label>

@@ -18,6 +18,7 @@ import (
 	"github.com/matrixn/zion-release-station/internal/detection"
 	gittransport "github.com/matrixn/zion-release-station/internal/git"
 	"github.com/matrixn/zion-release-station/internal/githubconnector"
+	"github.com/matrixn/zion-release-station/internal/secrets"
 	"github.com/matrixn/zion-release-station/internal/sites"
 	"github.com/matrixn/zion-release-station/internal/systemchecks"
 	"github.com/matrixn/zion-release-station/internal/webstation"
@@ -32,6 +33,7 @@ type Server struct {
 	webStation    webstation.WebStationAdapter
 	git           *gittransport.Client
 	githubManaged *githubconnector.Client
+	secrets       *secrets.Store
 	deployer      *deploy.Runner
 	deployQueue   *deploy.Queue
 }
@@ -49,6 +51,7 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 		webStation:    webstation.NewFilesystemAdapter(cfg.WebStationRoots, detection.Registry{}),
 		git:           gittransport.NewClient(cfg.DataDir),
 		githubManaged: githubconnector.NewClient(cfg),
+		secrets:       secrets.NewStore(cfg.DataDir),
 	}
 	events := deploy.NewEventHub()
 	server.deployer = deploy.NewRunnerWithHub(db, server.githubManaged, events)
@@ -72,6 +75,10 @@ func NewServer(cfg config.Config, db *sql.DB, logger *slog.Logger) *Server {
 	mux.HandleFunc("/api/v1/system/checks", server.handleSystemChecks)
 	mux.HandleFunc("/api/v1/settings/web-access", server.handleWebAccess)
 	mux.HandleFunc("/api/v1/settings/workspace", server.handleWorkspaceSettings)
+	mux.HandleFunc("/webhooks/github/", func(w http.ResponseWriter, r *http.Request) { server.handleIncomingWebhook("github", w, r) })
+	mux.HandleFunc("/webhooks/gitlab/", func(w http.ResponseWriter, r *http.Request) { server.handleIncomingWebhook("gitlab", w, r) })
+	mux.HandleFunc("/releasestation/api/v1/audit-logs", server.handleAuditLogs)
+	mux.HandleFunc("/api/v1/audit-logs", server.handleAuditLogs)
 	server.registerSiteRoutes(mux, "/releasestation/api/v1")
 	server.registerSiteRoutes(mux, "/api/v1")
 	server.registerIntegrationRoutes(mux, "/releasestation/api/v1")

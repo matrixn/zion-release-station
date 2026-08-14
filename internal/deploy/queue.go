@@ -15,14 +15,15 @@ import (
 type SiteLoader func(context.Context, string) (sites.Site, error)
 
 type Queue struct {
-	db       *sql.DB
-	runner   *Runner
-	loadSite SiteLoader
-	jobs     chan queuedJob
-	workers  int
-	wg       sync.WaitGroup
-	mu       sync.Mutex
-	siteGate map[string]chan struct{}
+	db        *sql.DB
+	runner    *Runner
+	loadSite  SiteLoader
+	jobs      chan queuedJob
+	workers   int
+	wg        sync.WaitGroup
+	mu        sync.Mutex
+	enqueueMu sync.Mutex
+	siteGate  map[string]chan struct{}
 }
 
 type queuedJob struct {
@@ -71,10 +72,15 @@ func (q *Queue) Enqueue(ctx context.Context, site sites.Site, ref, triggerType, 
 	if deploymentMethod == "" {
 		deploymentMethod = "manual"
 	}
+	q.enqueueMu.Lock()
+	defer q.enqueueMu.Unlock()
 	if existing, ok, err := q.findActiveDuplicate(ctx, site.ID, ref); err != nil {
 		return Deployment{}, err
 	} else if ok {
 		return existing, nil
+	}
+	if _, err := q.db.ExecContext(ctx, `UPDATE deployments SET status = 'superseded', error_code = 'SUPERSEDED', error_summary = 'Replaced by a newer pending deployment', finished_at = datetime('now') WHERE site_id = ? AND status = 'queued'`, site.ID); err != nil {
+		return Deployment{}, fmt.Errorf("apply latest pending policy: %w", err)
 	}
 	id, err := newID("dep_")
 	if err != nil {
@@ -115,16 +121,30 @@ func (q *Queue) worker(ctx context.Context) {
 }
 
 func (q *Queue) runJob(ctx context.Context, job queuedJob) {
+	if !q.isQueued(ctx, job.ID) {
+		return
+	}
 	release := q.lockSite(ctx, job.Site.ID)
 	if release == nil {
 		_ = q.runner.MarkFailed(context.Background(), job.ID, "QUEUE_CANCELLED", ctx.Err().Error())
 		return
 	}
 	defer release()
+	if !q.isQueued(ctx, job.ID) {
+		return
+	}
 	_, err := q.runner.DeployGitHubRefWithID(ctx, job.Site, job.Ref, job.TriggerType, job.DeploymentMethod, job.ID)
 	if err != nil {
 		_ = q.runner.MarkFailed(context.Background(), job.ID, "DEPLOYMENT_FAILED", err.Error())
 	}
+}
+
+func (q *Queue) isQueued(ctx context.Context, deploymentID string) bool {
+	var status string
+	if err := q.db.QueryRowContext(ctx, `SELECT status FROM deployments WHERE id = ?`, deploymentID).Scan(&status); err != nil {
+		return false
+	}
+	return status == "queued"
 }
 
 func (q *Queue) lockSite(ctx context.Context, siteID string) func() {

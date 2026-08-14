@@ -123,6 +123,14 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only GET and PUT are supported.")
 		return
 	}
+	if strings.HasSuffix(id, "/webhook") {
+		if r.Method != http.MethodGet && r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only GET and POST are supported.")
+			return
+		}
+		s.handleSiteWebhook(w, r, strings.TrimSuffix(id, "/webhook"))
+		return
+	}
 	if strings.HasSuffix(id, "/deploy") {
 		if r.Method != http.MethodPost {
 			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only POST is supported.")
