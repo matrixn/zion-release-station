@@ -8,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"path"
 	"regexp"
 	"strings"
 	"time"
@@ -32,6 +34,8 @@ type Site struct {
 	PushToDeploy        bool            `json:"push_to_deploy"`
 	DeployScript        string          `json:"deploy_script"`
 	DeploymentRetention int             `json:"deployment_retention"`
+	HealthCheckURL      string          `json:"health_check_url,omitempty"`
+	SharedDirectories   []string        `json:"shared_directories"`
 	Runtime             json.RawMessage `json:"runtime,omitempty"`
 	CreatedAt           string          `json:"created_at"`
 	UpdatedAt           string          `json:"updated_at"`
@@ -79,6 +83,8 @@ type Input struct {
 	PushToDeploy        bool
 	DeployScript        string
 	DeploymentRetention int
+	HealthCheckURL      string
+	SharedDirectories   []string
 	Runtime             any
 	Repository          *RepositoryInput
 }
@@ -134,6 +140,30 @@ for ITEM in "$SOURCE_DIR"/*; do
 done
 if [ "$VISIBLE_ENTRY_COUNT" -eq 1 ] && [ -d "$VISIBLE_DIR" ]; then
 	CONTENT_DIR="$VISIBLE_DIR"
+fi
+
+SHARED_ROOT="${SHARED_ROOT:-${PROJECT_ROOT:?PROJECT_ROOT is required}/.zion/shared}"
+mkdir -p "$SHARED_ROOT"
+if [ -n "${SHARED_DIRECTORIES:-}" ]; then
+	OLD_IFS="$IFS"
+	IFS=','
+	for RELATIVE in $SHARED_DIRECTORIES; do
+		[ -n "$RELATIVE" ] || continue
+		SHARED_PATH="$SHARED_ROOT/$RELATIVE"
+		RELEASE_SHARED_PATH="$CONTENT_DIR/$RELATIVE"
+		mkdir -p "$(dirname "$SHARED_PATH")"
+		if [ -e "$RELEASE_SHARED_PATH" ] || [ -L "$RELEASE_SHARED_PATH" ]; then
+			if [ ! -e "$SHARED_PATH" ] && [ ! -L "$SHARED_PATH" ]; then
+				mv "$RELEASE_SHARED_PATH" "$SHARED_PATH"
+			else
+				rm -rf "$RELEASE_SHARED_PATH"
+			fi
+		fi
+		mkdir -p "$SHARED_PATH"
+		mkdir -p "$(dirname "$RELEASE_SHARED_PATH")"
+		ln -s "$SHARED_PATH" "$RELEASE_SHARED_PATH"
+	done
+	IFS="$OLD_IFS"
 fi
 
 if [ -f "$CONTENT_DIR/composer.json" ]; then
@@ -263,16 +293,16 @@ func NewStore(db *sql.DB) *Store {
 }
 
 func (s *Store) List(ctx context.Context) ([]Site, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, name, slug, COALESCE(hostname, ''), project_root, COALESCE(web_root, ''), framework, COALESCE(custom_framework, ''), strategy, status, COALESCE(runtime_json, ''), COALESCE(tags_json, '[]'), COALESCE(color, '#f28c3b'), COALESCE(push_to_deploy, 0), COALESCE(deploy_script, ''), COALESCE(deployment_retention, 4), created_at, updated_at, archived_at FROM sites WHERE archived_at IS NULL ORDER BY name COLLATE NOCASE`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, name, slug, COALESCE(hostname, ''), project_root, COALESCE(web_root, ''), framework, COALESCE(custom_framework, ''), strategy, status, COALESCE(runtime_json, ''), COALESCE(tags_json, '[]'), COALESCE(color, '#f28c3b'), COALESCE(push_to_deploy, 0), COALESCE(deploy_script, ''), COALESCE(deployment_retention, 4), COALESCE(health_check_url, ''), COALESCE(shared_directories_json, '[]'), created_at, updated_at, archived_at FROM sites WHERE archived_at IS NULL ORDER BY name COLLATE NOCASE`)
 	if err != nil {
 		return nil, fmt.Errorf("list sites: %w", err)
 	}
 	var result []Site
 	for rows.Next() {
 		var site Site
-		var runtime, tags string
+		var runtime, tags, sharedDirectories string
 		var push int
-		if err := rows.Scan(&site.ID, &site.Name, &site.Slug, &site.Hostname, &site.ProjectRoot, &site.WebRoot, &site.Framework, &site.CustomFramework, &site.Strategy, &site.Status, &runtime, &tags, &site.Color, &push, &site.DeployScript, &site.DeploymentRetention, &site.CreatedAt, &site.UpdatedAt, &site.ArchivedAt); err != nil {
+		if err := rows.Scan(&site.ID, &site.Name, &site.Slug, &site.Hostname, &site.ProjectRoot, &site.WebRoot, &site.Framework, &site.CustomFramework, &site.Strategy, &site.Status, &runtime, &tags, &site.Color, &push, &site.DeployScript, &site.DeploymentRetention, &site.HealthCheckURL, &sharedDirectories, &site.CreatedAt, &site.UpdatedAt, &site.ArchivedAt); err != nil {
 			return nil, fmt.Errorf("scan site: %w", err)
 		}
 		if runtime != "" {
@@ -281,6 +311,7 @@ func (s *Store) List(ctx context.Context) ([]Site, error) {
 		site.DeployScript = EffectiveDeployScript(site.Strategy, site.DeployScript)
 		site.PushToDeploy = push != 0
 		_ = json.Unmarshal([]byte(tags), &site.Tags)
+		_ = json.Unmarshal([]byte(sharedDirectories), &site.SharedDirectories)
 		result = append(result, site)
 	}
 	if err := rows.Err(); err != nil {
@@ -300,9 +331,9 @@ func (s *Store) List(ctx context.Context) ([]Site, error) {
 
 func (s *Store) Get(ctx context.Context, id string) (Site, error) {
 	var site Site
-	var runtime, tags string
+	var runtime, tags, sharedDirectories string
 	var push int
-	err := s.db.QueryRowContext(ctx, `SELECT id, name, slug, COALESCE(hostname, ''), project_root, COALESCE(web_root, ''), framework, COALESCE(custom_framework, ''), strategy, status, COALESCE(runtime_json, ''), COALESCE(tags_json, '[]'), COALESCE(color, '#f28c3b'), COALESCE(push_to_deploy, 0), COALESCE(deploy_script, ''), COALESCE(deployment_retention, 4), created_at, updated_at, archived_at FROM sites WHERE id = ? AND archived_at IS NULL`, id).Scan(&site.ID, &site.Name, &site.Slug, &site.Hostname, &site.ProjectRoot, &site.WebRoot, &site.Framework, &site.CustomFramework, &site.Strategy, &site.Status, &runtime, &tags, &site.Color, &push, &site.DeployScript, &site.DeploymentRetention, &site.CreatedAt, &site.UpdatedAt, &site.ArchivedAt)
+	err := s.db.QueryRowContext(ctx, `SELECT id, name, slug, COALESCE(hostname, ''), project_root, COALESCE(web_root, ''), framework, COALESCE(custom_framework, ''), strategy, status, COALESCE(runtime_json, ''), COALESCE(tags_json, '[]'), COALESCE(color, '#f28c3b'), COALESCE(push_to_deploy, 0), COALESCE(deploy_script, ''), COALESCE(deployment_retention, 4), COALESCE(health_check_url, ''), COALESCE(shared_directories_json, '[]'), created_at, updated_at, archived_at FROM sites WHERE id = ? AND archived_at IS NULL`, id).Scan(&site.ID, &site.Name, &site.Slug, &site.Hostname, &site.ProjectRoot, &site.WebRoot, &site.Framework, &site.CustomFramework, &site.Strategy, &site.Status, &runtime, &tags, &site.Color, &push, &site.DeployScript, &site.DeploymentRetention, &site.HealthCheckURL, &sharedDirectories, &site.CreatedAt, &site.UpdatedAt, &site.ArchivedAt)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return Site{}, ErrNotFound
@@ -315,6 +346,7 @@ func (s *Store) Get(ctx context.Context, id string) (Site, error) {
 	site.DeployScript = EffectiveDeployScript(site.Strategy, site.DeployScript)
 	site.PushToDeploy = push != 0
 	_ = json.Unmarshal([]byte(tags), &site.Tags)
+	_ = json.Unmarshal([]byte(sharedDirectories), &site.SharedDirectories)
 	if err := s.attachRepository(ctx, &site); err != nil {
 		return Site{}, err
 	}
@@ -350,11 +382,15 @@ func (s *Store) Create(ctx context.Context, input Input) (Site, error) {
 	if err != nil {
 		return Site{}, fmt.Errorf("encode site tags: %w", err)
 	}
+	sharedDirectories, err := json.Marshal(normalizeSharedDirectories(input.SharedDirectories))
+	if err != nil {
+		return Site{}, fmt.Errorf("encode shared directories: %w", err)
+	}
 	retention := input.DeploymentRetention
 	if retention == 0 {
 		retention = 4
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO sites(id, name, slug, hostname, project_root, web_root, framework, custom_framework, strategy, status, runtime_json, tags_json, color, push_to_deploy, deploy_script, deployment_retention, created_at, updated_at) VALUES (?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''), ?, NULLIF(?, ''), ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?)`, id, input.Name, input.Slug, input.Hostname, input.ProjectRoot, input.WebRoot, input.Framework, input.CustomFramework, input.Strategy, input.Status, runtime, string(tags), normalizeColor(input.Color), boolInt(input.PushToDeploy), EffectiveDeployScript(input.Strategy, input.DeployScript), retention, now, now)
+	_, err = s.db.ExecContext(ctx, `INSERT INTO sites(id, name, slug, hostname, project_root, web_root, framework, custom_framework, strategy, status, runtime_json, tags_json, color, push_to_deploy, deploy_script, deployment_retention, health_check_url, shared_directories_json, created_at, updated_at) VALUES (?, ?, ?, NULLIF(?, ''), ?, NULLIF(?, ''), ?, NULLIF(?, ''), ?, ?, NULLIF(?, ''), ?, ?, ?, ?, ?, ?, ?, ?, ?)`, id, input.Name, input.Slug, input.Hostname, input.ProjectRoot, input.WebRoot, input.Framework, input.CustomFramework, input.Strategy, input.Status, runtime, string(tags), normalizeColor(input.Color), boolInt(input.PushToDeploy), EffectiveDeployScript(input.Strategy, input.DeployScript), retention, strings.TrimSpace(input.HealthCheckURL), string(sharedDirectories), now, now)
 	if err != nil {
 		return Site{}, fmt.Errorf("create site: %w", err)
 	}
@@ -379,7 +415,11 @@ func (s *Store) Update(ctx context.Context, id string, input Input) (Site, error
 	if err != nil {
 		return Site{}, fmt.Errorf("encode site tags: %w", err)
 	}
-	result, err := s.db.ExecContext(ctx, `UPDATE sites SET name = ?, slug = ?, hostname = NULLIF(?, ''), project_root = ?, web_root = NULLIF(?, ''), framework = ?, custom_framework = NULLIF(?, ''), strategy = ?, status = ?, runtime_json = NULLIF(?, ''), tags_json = ?, color = ?, push_to_deploy = ?, deploy_script = ?, deployment_retention = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL`, input.Name, input.Slug, input.Hostname, input.ProjectRoot, input.WebRoot, input.Framework, input.CustomFramework, input.Strategy, input.Status, runtime, string(tags), normalizeColor(input.Color), boolInt(input.PushToDeploy), EffectiveDeployScript(input.Strategy, input.DeployScript), input.DeploymentRetention, time.Now().UTC().Format(time.RFC3339Nano), id)
+	sharedDirectories, err := json.Marshal(normalizeSharedDirectories(input.SharedDirectories))
+	if err != nil {
+		return Site{}, fmt.Errorf("encode shared directories: %w", err)
+	}
+	result, err := s.db.ExecContext(ctx, `UPDATE sites SET name = ?, slug = ?, hostname = NULLIF(?, ''), project_root = ?, web_root = NULLIF(?, ''), framework = ?, custom_framework = NULLIF(?, ''), strategy = ?, status = ?, runtime_json = NULLIF(?, ''), tags_json = ?, color = ?, push_to_deploy = ?, deploy_script = ?, deployment_retention = ?, health_check_url = ?, shared_directories_json = ?, updated_at = ? WHERE id = ? AND archived_at IS NULL`, input.Name, input.Slug, input.Hostname, input.ProjectRoot, input.WebRoot, input.Framework, input.CustomFramework, input.Strategy, input.Status, runtime, string(tags), normalizeColor(input.Color), boolInt(input.PushToDeploy), EffectiveDeployScript(input.Strategy, input.DeployScript), input.DeploymentRetention, strings.TrimSpace(input.HealthCheckURL), string(sharedDirectories), time.Now().UTC().Format(time.RFC3339Nano), id)
 	if err != nil {
 		return Site{}, fmt.Errorf("update site: %w", err)
 	}
@@ -464,6 +504,18 @@ func validateInput(input Input) error {
 	if input.DeploymentRetention < 0 || input.DeploymentRetention > 100 {
 		return fmt.Errorf("deployment retention must be between 0 and 100")
 	}
+	if healthURL := strings.TrimSpace(input.HealthCheckURL); healthURL != "" {
+		parsed, err := url.ParseRequestURI(healthURL)
+		if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Hostname() == "" || parsed.User != nil {
+			return fmt.Errorf("health check URL must be a valid http or https URL")
+		}
+	}
+	if len(normalizeSharedDirectories(input.SharedDirectories)) != len(input.SharedDirectories) {
+		return fmt.Errorf("shared directories must be unique relative paths without traversal")
+	}
+	if len(input.SharedDirectories) > 32 {
+		return fmt.Errorf("a site can have at most 32 shared directories")
+	}
 	if len(input.DeployScript) > 64*1024 {
 		return fmt.Errorf("deployment script must be at most 64 KB")
 	}
@@ -499,6 +551,24 @@ func normalizeColor(value string) string {
 		return value
 	}
 	return "#f28c3b"
+}
+
+func normalizeSharedDirectories(values []string) []string {
+	result := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.Trim(strings.ReplaceAll(strings.TrimSpace(value), "\\", "/"), "/")
+		clean := path.Clean(value)
+		if clean == "." || clean == ".." || strings.HasPrefix(clean, "../") || strings.HasPrefix(clean, "/") || strings.HasPrefix(clean, ".zion") || strings.HasPrefix(clean, ".current") {
+			continue
+		}
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		result = append(result, clean)
+	}
+	return result
 }
 func boolInt(value bool) int {
 	if value {

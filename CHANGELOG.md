@@ -4,6 +4,9 @@ Istoricul de mai jos păstrează evoluția proiectului și explică problema sau
 
 ## Unreleased
 
+- **Milestone 5 — Release Management** — Atomic sites now support configurable shared directories under `.zion/shared`, optional post-activation HTTP(S) health checks, automatic rollback after a failed health check, release history, manual rollback with a clear database-migration warning, and safe release retention that never removes the active release.
+- **Release Management UI** — site Overview now includes a visual release timeline with Current/Previous labels, health state, commit context and a per-release Rollback action. Settings exposes the health check URL and shared directories with validation and explanatory copy.
+
 - **Composer-aware atomic deployments** — the default Atomic deployment checks for `composer.json`, runs `composer install --no-interaction --prefer-dist --optimize-autoloader`, then runs the Composer `test` script when defined or falls back to an installed PHPUnit/Pest runner. A missing Composer executable fails the deployment clearly, and existing sites with previously generated default scripts are migrated automatically while custom scripts remain unchanged.
 
 - **Atomic wrapper-directory fix** — default deployment now ignores hidden repository metadata when detecting a single visible GitHub archive wrapper directory. Existing sites with the previously generated atomic script are migrated by signature at runtime, so the application files are published directly into the Web Station document root while useful root-level dotfiles are preserved.

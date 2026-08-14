@@ -59,6 +59,8 @@ type Site = {
   push_to_deploy?: boolean;
   deploy_script?: string;
   deployment_retention?: number;
+  health_check_url?: string;
+  shared_directories?: string[];
   runtime?: Record<string, any>;
   created_at: string;
   updated_at: string;
@@ -83,6 +85,7 @@ type GithubRepository = {
 };
 type GithubInstallation = { github_installation_id: number; account_login: string; account_type: string; repository_selection: string; };
 type Deployment = { id: string; site_id: string; trigger_type: string; trigger_reference?: string; deployment_method?: string; branch: string; commit_sha: string; commit_message: string; commit_url: string; status: string; error_code?: string; error_summary?: string; queued_at: string; started_at?: string; finished_at?: string; duration_ms?: number; created_at: string; build_log?: string; deployment_log?: string; steps?: { id: string; step_key: string; name: string; status: string; duration_ms?: number }[]; };
+type Release = { id: string; site_id: string; deployment_id: string; release_name: string; release_path: string; commit_sha?: string; commit_message?: string; commit_url?: string; branch?: string; active: boolean; health_status?: string; created_at: string; activated_at?: string; };
 type Commit = { sha: string; message: string; branch: string; author?: string; url?: string; created_at?: string; deployed: boolean; included_in_deployed?: boolean; deployment_id?: string; status: string; };
 
 type GithubState = {
@@ -128,6 +131,11 @@ const selectedSiteTab = ref<'Overview' | 'Repository' | 'Deployments' | 'Setting
 const selectedDeployment = ref<Deployment | null>(null);
 const siteDeployments = ref<Deployment[]>([]);
 const siteCommits = ref<Commit[]>([]);
+const siteReleases = ref<Release[]>([]);
+const releasesLoading = ref(false);
+const rollbackReleaseID = ref('');
+const releaseMessage = ref('');
+const releaseError = ref('');
 const sitePage = ref(1);
 const siteTotalPages = ref(1);
 const deploymentSearch = ref('');
@@ -211,7 +219,10 @@ const siteSettingsForm = ref({
   push_to_deploy: false,
   deploy_script: '',
   deployment_retention: 4,
+  health_check_url: '',
+  shared_directories: [] as string[],
 });
+const sharedDirectoryDraft = ref('');
 const deployScriptEditor = ref<HTMLElement | null>(null);
 let deployScriptEditorView: EditorView | null = null;
 type DashboardMetrics = {
@@ -330,6 +341,11 @@ const helpArticles: Record<string, { title: string; summary: string; steps: stri
     title: 'SQLite database',
     summary: 'Release Station folosește SQLite local pentru site-uri, deployment-uri, release-uri și starea connectorului.',
     steps: ['Verifică în Package Health că serviciul local este healthy.', 'Nu șterge fișierul bazei de date din directorul pachetului.', 'Dacă baza este blocată, oprește și pornește pachetul din Package Center înainte de a repeta operația.'],
+  },
+  'Atomic releases': {
+    title: 'Atomic releases and rollback',
+    summary: 'Fiecare release este păstrat separat în .zion/releases, iar .current indică versiunea activă. După activare, URL-ul de health check decide dacă versiunea rămâne live.',
+    steps: ['Configurează un Health check URL în site → Settings → Deployment. Fără URL, deployment-ul este marcat skipped și nu poate declanșa rollback automat.', 'Adaugă directoare persistente precum storage sau uploads la Shared directories. Ele sunt păstrate în .zion/shared și legate în fiecare release.', 'Pentru rollback, deschide site → Overview → Release history și alege Rollback here. Sunt restaurate fișierele aplicației; migrațiile bazei de date nu sunt inversate automat.'],
   },
 };
 function systemItem(topic: string) {
@@ -607,8 +623,11 @@ function resetSiteSettingsForm(site: Site) {
     push_to_deploy: !!site.push_to_deploy,
     deploy_script: site.deploy_script || '',
     deployment_retention: site.deployment_retention ?? 4,
+    health_check_url: site.health_check_url || '',
+    shared_directories: [...(site.shared_directories || [])],
   };
   siteTagDraft.value = '';
+  sharedDirectoryDraft.value = '';
 }
 
 function openSiteSettings() {
@@ -678,6 +697,21 @@ function onSiteTagKeydown(event: KeyboardEvent) {
 
 function removeSiteTag(tag: string) {
   siteSettingsForm.value.tags = siteSettingsForm.value.tags.filter((item) => item !== tag);
+}
+
+function addSharedDirectory() {
+  const value = sharedDirectoryDraft.value.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+  if (!value || value.includes(',') || value === '.' || value === '..' || value.startsWith('../') || value.startsWith('.zion') || value.startsWith('.current')) return;
+  if (!siteSettingsForm.value.shared_directories.some((item) => item === value)) siteSettingsForm.value.shared_directories.push(value);
+  sharedDirectoryDraft.value = '';
+}
+
+function onSharedDirectoryKeydown(event: KeyboardEvent) {
+  if (event.key === 'Enter' || event.key === ',') { event.preventDefault(); addSharedDirectory(); }
+}
+
+function removeSharedDirectory(directory: string) {
+  siteSettingsForm.value.shared_directories = siteSettingsForm.value.shared_directories.filter((item) => item !== directory);
 }
 
 async function copySiteDirectory(value: string) {
@@ -773,22 +807,52 @@ async function disconnectSiteRepository() {
 async function loadSiteHistory() {
   if (!selectedSite.value) return;
   siteDetailLoading.value = true;
+  releasesLoading.value = true;
   try {
-    const [deploymentResponse, commitResponse] = await Promise.all([
+    const [deploymentResponse, commitResponse, releaseResponse] = await Promise.all([
       fetch(`/releasestation/api/v1/sites/${selectedSite.value.id}/deployments?page=${sitePage.value}&per_page=25&q=${encodeURIComponent(deploymentSearch.value)}`, { headers: { Accept: 'application/json' } }),
       fetch(`/releasestation/api/v1/sites/${selectedSite.value.id}/commits`, { headers: { Accept: 'application/json' } }),
+      fetch(`/releasestation/api/v1/sites/${selectedSite.value.id}/releases`, { headers: { Accept: 'application/json' } }),
     ]);
     const deploymentPayload = await deploymentResponse.json().catch(() => ({}));
     const commitPayload = await commitResponse.json().catch(() => ({}));
+    const releasePayload = await releaseResponse.json().catch(() => ({}));
     if (!deploymentResponse.ok) throw new Error(deploymentPayload.error?.message || 'Could not load deployments.');
     if (!commitResponse.ok) throw new Error(commitPayload.error?.message || 'Could not load repository commits.');
+    if (!releaseResponse.ok) throw new Error(releasePayload.error?.message || 'Could not load releases.');
     siteDeployments.value = deploymentPayload.data?.items || [];
     siteTotalPages.value = deploymentPayload.data?.total_pages || 1;
     siteCommits.value = commitResponse.ok ? (commitPayload.data || []) : [];
+    siteReleases.value = releaseResponse.ok ? (releasePayload.data || []) : [];
   } catch (error) {
     deployError.value = error instanceof Error ? error.message : 'Could not load site history.';
   } finally {
     siteDetailLoading.value = false;
+    releasesLoading.value = false;
+  }
+}
+
+async function rollbackRelease(release: Release) {
+  if (!selectedSite.value || release.active || rollbackReleaseID.value) return;
+  const commit = release.commit_sha ? release.commit_sha.slice(0, 7) : release.id;
+  if (!window.confirm(`Rollback application files to ${commit}? Database migrations will not be reversed.`)) return;
+  rollbackReleaseID.value = release.id;
+  releaseMessage.value = '';
+  releaseError.value = '';
+  try {
+    const response = await fetch(`/releasestation/api/v1/sites/${selectedSite.value.id}/rollback`, {
+      method: 'POST', headers: { Accept: 'application/json', 'Content-Type': 'application/json' }, body: JSON.stringify({ release_id: release.id }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error?.message || 'Rollback failed.');
+    releaseMessage.value = `Application files rolled back to ${commit}. Database migrations were not reversed.`;
+    await loadSites();
+    selectedSite.value = sites.value.find((site) => site.id === selectedSite.value?.id) || selectedSite.value;
+    await loadSiteHistory();
+  } catch (error) {
+    releaseError.value = error instanceof Error ? error.message : 'Rollback failed.';
+  } finally {
+    rollbackReleaseID.value = '';
   }
 }
 
@@ -828,7 +892,7 @@ async function openDeploymentDetails(deployment: Deployment) {
 }
 
 function deploymentTerminal(status?: string) {
-  return status === 'deployed' || status === 'failed' || status === 'cancelled';
+  return status === 'deployed' || status === 'failed' || status === 'rolled_back' || status === 'cancelled';
 }
 
 function stopDeploymentStream() {
@@ -1592,6 +1656,7 @@ onBeforeUnmount(() => {
           <div class="site-tabs"><button type="button" :class="{ active: selectedSiteTab === 'Overview' }" @click="selectedSiteTab = 'Overview'">Overview</button><button type="button" :class="{ active: selectedSiteTab === 'Deployments' }" @click="selectedSiteTab = 'Deployments'">Deployments <span>{{ siteDeployments.length }}</span></button><button type="button" :class="{ active: selectedSiteTab === 'Repository' }" @click="openRepositoryTab">Repository</button><button type="button" :class="{ active: selectedSiteTab === 'Settings' }" @click="openSiteSettings">Settings</button></div>
           <template v-if="selectedSiteTab === 'Overview'">
             <div class="site-meta-grid"><article class="panel site-meta-card"><span>Framework</span><strong>{{ frameworkLabel(selectedSite.framework) }}</strong></article><article class="panel site-meta-card"><span>PHP</span><strong>{{ siteRuntime(selectedSite, 'php_version', '8.5') }}</strong></article><article class="panel site-meta-card"><span>HTTP server</span><strong>{{ siteRuntime(selectedSite, 'http_server', 'Unknown') }}</strong></article><article class="panel site-meta-card"><span>Public IP</span><button type="button" @click="copyPublicIP(selectedSite)">{{ siteRuntime(selectedSite, 'public_ip', 'Not detected') }}</button></article><article class="panel site-meta-card"><span>Public Web</span><a :href="sitePublicURL(selectedSite)" target="_blank" rel="noreferrer">{{ sitePublicURL(selectedSite) }}</a></article><article class="panel site-meta-card"><span>Created</span><strong>{{ createdLabel(selectedSite.created_at) }}</strong></article></div>
+            <section class="release-history-panel panel"><div class="release-history-heading"><div><div class="panel-kicker">RELEASE MANAGEMENT</div><h2>Release history</h2><p>Activated releases are retained for safe rollback. Application files can be restored without reversing database migrations.</p></div><span class="release-retention-pill">{{ selectedSite.deployment_retention ?? 4 }} retained</span></div><div v-if="releaseMessage" class="discovery-success"><Check :size="15" />{{ releaseMessage }}</div><div v-if="releaseError" class="discovery-error"><CircleAlert :size="15" />{{ releaseError }}</div><div v-if="releasesLoading" class="detail-loading"><RotateCw :size="16" class="spin" /> Loading releases…</div><div v-else-if="siteReleases.length" class="release-timeline"><article v-for="(release, index) in siteReleases" :key="release.id" class="release-timeline-item" :class="{ current: release.active }"><span class="release-timeline-marker"><Check v-if="release.active" :size="12" /><CircleDot v-else :size="12" /></span><div class="release-timeline-copy"><div class="release-timeline-title"><strong>{{ release.active ? 'Current' : (index === 1 ? 'Previous' : 'Release') }}</strong><code>{{ release.commit_sha ? release.commit_sha.slice(0, 7) : release.id }}</code><span class="release-health" :class="release.health_status || 'unknown'">{{ release.health_status || 'not checked' }}</span></div><p>{{ release.commit_message || 'Release without commit message' }}</p><small>{{ release.branch || '—' }} · {{ relativeTime(release.activated_at || release.created_at) }} · {{ release.release_path }}</small></div><button v-if="!release.active" class="button button-secondary release-rollback-button" type="button" :disabled="rollbackReleaseID !== ''" @click="rollbackRelease(release)"><RotateCw v-if="rollbackReleaseID === release.id" :size="13" class="spin" /><span v-else>Rollback here</span></button></article></div><div v-else class="management-empty release-empty"><Database :size="21" /><strong>No releases recorded yet</strong><span>The first successful Atomic deployment will appear here with a rollback target.</span></div><div class="release-warning"><CircleAlert :size="14" /><span>Rollback restores application files only. Database migrations are not reversed automatically.</span></div></section>
             <div class="detail-section-heading"><div><div class="panel-kicker">SOURCE HISTORY</div><h2>Commits</h2></div><span class="muted-copy">{{ selectedSite.repository?.branch || 'main' }}</span></div>
             <div class="commit-legend" aria-label="Commit status legend"><span><span class="commit-state deployed"><Check :size="11" /></span>Deployed directly</span><span><span class="commit-state included"><CircleDot :size="11" /></span>Included in a newer deployed commit</span><span><span class="commit-state pending"><CircleDot :size="11" /></span>Not deployed</span><span><span class="commit-state failed"><CircleX :size="11" /></span>Deployment failed</span></div>
             <div v-if="siteDetailLoading" class="detail-loading"><RotateCw :size="16" class="spin" /> Loading repository history…</div>
@@ -1603,7 +1668,9 @@ onBeforeUnmount(() => {
               <section class="site-settings-section"><div class="site-settings-heading"><div><div class="panel-kicker">DEPLOYMENT</div><h2>Deployment</h2></div><span class="muted-copy">{{ selectedSite.repository?.branch || 'No branch selected' }}</span></div>
                 <label class="settings-toggle-row"><span><strong>Push to deploy</strong><small>Deploy automatically after every push to the selected branch.</small></span><input v-model="siteSettingsForm.push_to_deploy" type="checkbox" /></label>
                 <label class="site-field"><span>Deploy script</span><div class="deploy-script-editor-shell"><div class="deploy-script-editor-toolbar"><span><TerminalSquare :size="13" /> deploy.sh</span><small>Shell · {{ deployScriptLineCount }} lines</small></div><div ref="deployScriptEditor" class="deploy-script-editor" aria-label="Deployment script editor" /></div><small>Scriptul rulează ca utilizatorul pachetului. Variabile disponibile: <code>$PROJECT_ROOT</code>, <code>$CURRENT_DIR</code>, <code>$RELEASE_DIR</code>, <code>$WEB_ROOT</code>, <code>$RELEASE_ID</code> și <code>$COMMIT_SHA</code>.</small></label>
-                <label class="site-field"><span>Deployment retention</span><input v-model.number="siteSettingsForm.deployment_retention" type="number" min="0" max="100" /><small>Configure the number of previous deployments to retain after each successful deployment. Default: 4.</small></label>
+                <label class="site-field"><span>Deployment retention</span><input v-model.number="siteSettingsForm.deployment_retention" type="number" min="0" max="100" /><small>Configure the number of previous releases to retain after each successful deployment. Default: 4. The current release is always protected.</small></label>
+                <label class="site-field"><span>Health check URL</span><input v-model="siteSettingsForm.health_check_url" type="url" placeholder="https://example.com/health" /><small>Optional HTTP(S) URL checked after activation. A failed check triggers automatic rollback to the previous release.</small></label>
+                <div class="site-field"><span>Shared directories</span><div class="tag-editor"><span v-for="directory in siteSettingsForm.shared_directories" :key="directory" class="tag-badge shared-directory-badge">{{ directory }}<button type="button" :aria-label="`Remove shared directory ${directory}`" @click="removeSharedDirectory(directory)"><X :size="11" /></button></span><input v-model="sharedDirectoryDraft" type="text" placeholder="storage/ and press Enter" @keydown="onSharedDirectoryKeydown" /></div><small>Directories persist in <code>.zion/shared</code> across releases and are linked into every activated release. Use relative paths such as <code>storage</code> or <code>uploads</code>.</small></div>
               </section>
               <section class="site-settings-section"><div class="site-settings-heading"><div><div class="panel-kicker">GENERAL</div><h2>General</h2></div></div>
                 <label class="site-field"><span>Framework</span><select v-model="siteSettingsForm.framework"><option v-for="option in frameworkSettingOptions" :key="option.value" :value="option.value">{{ option.label }}</option></select><small>The framework used by the installed application. Changing the framework does not modify the Nginx/apache configuration.</small></label>

@@ -75,3 +75,82 @@ func TestStorePersistsRepositorySelectionWithSite(t *testing.T) {
 		t.Fatalf("repository was not loaded with site list: sites=%#v err=%v", listed, err)
 	}
 }
+
+func TestStorePersistsReleaseManagementSettings(t *testing.T) {
+	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	store := NewStore(db)
+	site, err := store.Create(context.Background(), Input{
+		Name:              "Release site",
+		Slug:              "release-site",
+		ProjectRoot:       "/volume1/www/release-site",
+		WebRoot:           "/volume1/www/release-site",
+		Framework:         "php",
+		Strategy:          "atomic",
+		Status:            "active",
+		HealthCheckURL:    "https://release-site.test/healthz",
+		SharedDirectories: []string{"storage", "bootstrap/cache"},
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	loaded, err := store.Get(context.Background(), site.ID)
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if loaded.HealthCheckURL != "https://release-site.test/healthz" {
+		t.Fatalf("unexpected health check URL: %q", loaded.HealthCheckURL)
+	}
+	if len(loaded.SharedDirectories) != 2 || loaded.SharedDirectories[1] != "bootstrap/cache" {
+		t.Fatalf("unexpected shared directories: %#v", loaded.SharedDirectories)
+	}
+
+	if _, err := store.Update(context.Background(), site.ID, Input{
+		Name:              loaded.Name,
+		Slug:              loaded.Slug,
+		ProjectRoot:       loaded.ProjectRoot,
+		WebRoot:           loaded.WebRoot,
+		Framework:         loaded.Framework,
+		Strategy:          loaded.Strategy,
+		Status:            loaded.Status,
+		HealthCheckURL:    "",
+		SharedDirectories: []string{"storage"},
+	}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+	loaded, err = store.Get(context.Background(), site.ID)
+	if err != nil {
+		t.Fatalf("get after update: %v", err)
+	}
+	if loaded.HealthCheckURL != "" || len(loaded.SharedDirectories) != 1 || loaded.SharedDirectories[0] != "storage" {
+		t.Fatalf("release management settings were not updated: %#v", loaded)
+	}
+}
+
+func TestStoreRejectsUnsafeReleaseManagementSettings(t *testing.T) {
+	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+
+	store := NewStore(db)
+	_, err = store.Create(context.Background(), Input{
+		Name:              "Unsafe",
+		Slug:              "unsafe",
+		ProjectRoot:       "/volume1/www/unsafe",
+		WebRoot:           "/volume1/www/unsafe",
+		Framework:         "php",
+		Strategy:          "atomic",
+		Status:            "active",
+		HealthCheckURL:    "file:///etc/passwd",
+		SharedDirectories: []string{"../secrets"},
+	})
+	if err == nil {
+		t.Fatal("expected unsafe release management settings to be rejected")
+	}
+}

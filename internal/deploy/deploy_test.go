@@ -126,6 +126,12 @@ func TestDefaultAtomicScriptPublishesSingleRepositoryDirectoryToDocumentRoot(t *
 	if err := os.WriteFile(filepath.Join(current, ".gitignore"), []byte("/vendor/\n"), 0o644); err != nil {
 		t.Fatalf("write prepared hidden file: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(current, "matrixn-sample-wordpress-plugin-9e5a26a", "storage"), 0o755); err != nil {
+		t.Fatalf("create shared directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(current, "matrixn-sample-wordpress-plugin-9e5a26a", "storage", "keep.txt"), []byte("persistent"), 0o644); err != nil {
+		t.Fatalf("write shared file: %v", err)
+	}
 	if err := os.MkdirAll(filepath.Join(root, ".zion", "releases"), 0o700); err != nil {
 		t.Fatalf("create release state: %v", err)
 	}
@@ -133,7 +139,7 @@ func TestDefaultAtomicScriptPublishesSingleRepositoryDirectoryToDocumentRoot(t *
 		t.Fatalf("write old document root: %v", err)
 	}
 
-	site := sites.Site{ID: "site_default", ProjectRoot: root, WebRoot: root, Strategy: "atomic"}
+	site := sites.Site{ID: "site_default", ProjectRoot: root, WebRoot: root, Strategy: "atomic", SharedDirectories: []string{"storage"}}
 	logs := newDeploymentLogs(NewEventHub(), "dep_test")
 	if err := runDeploymentScript(context.Background(), site, current, current, "dep_test", "rel_test", "sha", logs); err != nil {
 		t.Fatalf("run default deployment script: %v", err)
@@ -156,6 +162,13 @@ func TestDefaultAtomicScriptPublishesSingleRepositoryDirectoryToDocumentRoot(t *
 	}
 	if _, err := os.Stat(filepath.Join(root, ".zion")); err != nil {
 		t.Fatalf("release state was removed: %v", err)
+	}
+	if info, err := os.Lstat(filepath.Join(root, "storage")); err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("shared directory was not linked into the document root: %v", err)
+	}
+	content, err = os.ReadFile(filepath.Join(root, ".zion", "shared", "storage", "keep.txt"))
+	if err != nil || string(content) != "persistent" {
+		t.Fatalf("shared directory contents were not preserved: %q (%v)", content, err)
 	}
 }
 

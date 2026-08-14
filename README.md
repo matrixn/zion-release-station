@@ -126,11 +126,12 @@ Pentru atomic deployment, site-ul rulează în continuare release-ul curent pân
 /volume1/www/example/
 ├── .current -> .zion/releases/<release-id>
 ├── index.php / public/      # Web Station document root
-├── .zion/releases/
-└── shared/
-    ├── .env
+├── .zion/releases/          # immutable release directories
+└── .zion/shared/            # persistent directories selected in Settings
     └── storage/
 ```
+
+Directorul document root rămâne public și conține fișierele aplicației active; `.current` este pointerul intern către release-ul pregătit. Directoarele configurate în **Settings → Shared directories** sunt mutate în `.zion/shared` și legate simbolic în fiecare release, astfel încât uploadurile și storage-ul să supraviețuiască unui deploy. Dacă este configurat un **Health check URL**, acesta este verificat după activare; la eșec se revine automat la release-ul anterior. Rollback-ul nu inversează migrații de bază de date.
 
 ## Integrarea Web Station
 

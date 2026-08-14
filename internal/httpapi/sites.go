@@ -38,6 +38,8 @@ type sitePayload struct {
 	PushToDeploy        *bool    `json:"push_to_deploy"`
 	DeployScript        string   `json:"deploy_script"`
 	DeploymentRetention *int     `json:"deployment_retention"`
+	HealthCheckURL      string   `json:"health_check_url"`
+	SharedDirectories   []string `json:"shared_directories"`
 	Runtime             any      `json:"runtime"`
 	Repository          *struct {
 		Provider             string `json:"provider"`
@@ -80,6 +82,8 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 				input.PushToDeploy = *payload.PushToDeploy
 			}
 			input.DeployScript = payload.DeployScript
+			input.HealthCheckURL = payload.HealthCheckURL
+			input.SharedDirectories = payload.SharedDirectories
 			if payload.DeploymentRetention != nil {
 				input.DeploymentRetention = *payload.DeploymentRetention
 			}
@@ -125,6 +129,22 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.handleSiteDeploy(w, r, strings.TrimSuffix(id, "/deploy"))
+		return
+	}
+	if strings.HasSuffix(id, "/releases") {
+		if r.Method != http.MethodGet {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only GET is supported.")
+			return
+		}
+		s.handleSiteReleases(w, r, strings.TrimSuffix(id, "/releases"))
+		return
+	}
+	if strings.HasSuffix(id, "/rollback") {
+		if r.Method != http.MethodPost {
+			writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only POST is supported.")
+			return
+		}
+		s.handleSiteRollback(w, r, strings.TrimSuffix(id, "/rollback"))
 		return
 	}
 	if strings.HasSuffix(id, "/deployments") || strings.Contains(id, "/deployments/") {
@@ -193,6 +213,8 @@ func (s *Server) handleSites(w http.ResponseWriter, r *http.Request) {
 			input.PushToDeploy = *payload.PushToDeploy
 		}
 		input.DeployScript = payload.DeployScript
+		input.HealthCheckURL = payload.HealthCheckURL
+		input.SharedDirectories = payload.SharedDirectories
 		if payload.DeploymentRetention != nil {
 			input.DeploymentRetention = *payload.DeploymentRetention
 		}
@@ -246,6 +268,63 @@ func (s *Server) handleSiteDeploy(w http.ResponseWriter, r *http.Request, id str
 		return
 	}
 	writeJSON(w, http.StatusAccepted, map[string]any{"data": result})
+}
+
+func (s *Server) handleSiteReleases(w http.ResponseWriter, r *http.Request, siteID string) {
+	if siteID == "" || strings.Contains(siteID, "/") {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Site not found.")
+		return
+	}
+	if _, err := s.sites.Get(r.Context(), siteID); errors.Is(err, sites.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Site not found.")
+		return
+	} else if err != nil {
+		writeError(w, http.StatusInternalServerError, "SITES_UNAVAILABLE", err.Error())
+		return
+	}
+	items, err := s.deployer.ListReleases(r.Context(), siteID)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "RELEASES_UNAVAILABLE", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": items})
+}
+
+func (s *Server) handleSiteRollback(w http.ResponseWriter, r *http.Request, siteID string) {
+	if siteID == "" || strings.Contains(siteID, "/") {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Site not found.")
+		return
+	}
+	site, err := s.sites.Get(r.Context(), siteID)
+	if errors.Is(err, sites.ErrNotFound) {
+		writeError(w, http.StatusNotFound, "NOT_FOUND", "Site not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "SITES_UNAVAILABLE", err.Error())
+		return
+	}
+	var payload struct {
+		ReleaseID string `json:"release_id"`
+	}
+	if err := decodeJSON(w, r, &payload); err != nil {
+		writeError(w, http.StatusBadRequest, "INVALID_ROLLBACK", err.Error())
+		return
+	}
+	if strings.TrimSpace(payload.ReleaseID) == "" {
+		writeError(w, http.StatusBadRequest, "INVALID_ROLLBACK", "release_id is required")
+		return
+	}
+	result, err := s.deployer.Rollback(r.Context(), site, strings.TrimSpace(payload.ReleaseID))
+	if errors.Is(err, sql.ErrNoRows) {
+		writeError(w, http.StatusNotFound, "RELEASE_NOT_FOUND", "Release not found.")
+		return
+	}
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "ROLLBACK_FAILED", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"data": result})
 }
 
 func (s *Server) handleSiteRepository(w http.ResponseWriter, r *http.Request, siteID string) {
@@ -334,18 +413,21 @@ func (s *Server) handleSiteSettings(w http.ResponseWriter, r *http.Request, site
 		writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
 			"framework": site.Framework, "custom_framework": site.CustomFramework, "tags": site.Tags, "color": site.Color,
 			"push_to_deploy": site.PushToDeploy, "deploy_script": site.DeployScript, "deployment_retention": site.DeploymentRetention,
+			"health_check_url": site.HealthCheckURL, "shared_directories": site.SharedDirectories,
 			"project_root": site.ProjectRoot, "web_root": site.WebRoot,
 		}})
 		return
 	}
 	var payload struct {
-		Framework           string   `json:"framework"`
-		CustomFramework     string   `json:"custom_framework"`
-		Tags                []string `json:"tags"`
-		Color               string   `json:"color"`
-		PushToDeploy        *bool    `json:"push_to_deploy"`
-		DeployScript        string   `json:"deploy_script"`
-		DeploymentRetention *int     `json:"deployment_retention"`
+		Framework           string    `json:"framework"`
+		CustomFramework     string    `json:"custom_framework"`
+		Tags                []string  `json:"tags"`
+		Color               string    `json:"color"`
+		PushToDeploy        *bool     `json:"push_to_deploy"`
+		DeployScript        string    `json:"deploy_script"`
+		DeploymentRetention *int      `json:"deployment_retention"`
+		HealthCheckURL      *string   `json:"health_check_url"`
+		SharedDirectories   *[]string `json:"shared_directories"`
 	}
 	if err := decodeJSON(w, r, &payload); err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_SETTINGS", err.Error())
@@ -368,10 +450,19 @@ func (s *Server) handleSiteSettings(w http.ResponseWriter, r *http.Request, site
 	if payload.PushToDeploy != nil {
 		push = *payload.PushToDeploy
 	}
+	healthCheckURL := site.HealthCheckURL
+	if payload.HealthCheckURL != nil {
+		healthCheckURL = *payload.HealthCheckURL
+	}
+	sharedDirectories := site.SharedDirectories
+	if payload.SharedDirectories != nil {
+		sharedDirectories = *payload.SharedDirectories
+	}
 	updated, err := s.sites.Update(r.Context(), siteID, sites.Input{
 		Name: site.Name, Slug: site.Slug, Hostname: site.Hostname, ProjectRoot: site.ProjectRoot, WebRoot: site.WebRoot,
 		Framework: framework, CustomFramework: customFramework, Strategy: site.Strategy, Status: site.Status, Runtime: site.Runtime,
 		Tags: payload.Tags, Color: payload.Color, PushToDeploy: push, DeployScript: payload.DeployScript, DeploymentRetention: retention,
+		HealthCheckURL: healthCheckURL, SharedDirectories: sharedDirectories,
 	})
 	if err != nil {
 		writeError(w, http.StatusBadRequest, "INVALID_SETTINGS", err.Error())

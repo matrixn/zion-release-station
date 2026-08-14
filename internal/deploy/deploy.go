@@ -143,6 +143,10 @@ func (r *Runner) deployGitHubRef(ctx context.Context, site sites.Site, ref, trig
 		return Result{}, err
 	}
 	defer releaseLock(lock)
+	previousRelease, previousReleaseErr := r.activeRelease(ctx, site.ID)
+	if previousReleaseErr != nil && !errors.Is(previousReleaseErr, sql.ErrNoRows) {
+		return Result{}, previousReleaseErr
+	}
 
 	if deploymentID == "" {
 		deploymentID, err = newID("dep_")
@@ -184,13 +188,21 @@ func (r *Runner) deployGitHubRef(ctx context.Context, site sites.Site, ref, trig
 	steps := newStepTracker(ctx, r, deploymentID)
 	defer steps.failOpen()
 	failed := true
+	finalStatus := "failed"
+	finalErrorCode := "DEPLOYMENT_FAILED"
+	currentSwitched := false
 	defer func() {
+		if err != nil && currentSwitched && previousReleaseErr == nil {
+			if restoreErr := r.switchCurrent(site.ProjectRoot, previousRelease.ReleasePath); restoreErr != nil {
+				logs.add("deployment", "Unable to restore previous current release: "+restoreErr.Error())
+			}
+		}
 		if err != nil {
 			logs.add("deployment", "ERROR: "+err.Error())
 		}
 		_ = r.saveDeploymentLogs(context.Background(), deploymentID, logs)
 		if failed {
-			_ = r.finishDeployment(context.Background(), deploymentID, "failed", "DEPLOYMENT_FAILED")
+			_ = r.finishDeployment(context.Background(), deploymentID, finalStatus, finalErrorCode)
 		} else {
 			_ = r.finishDeployment(context.Background(), deploymentID, "deployed", "")
 		}
@@ -251,6 +263,7 @@ func (r *Runner) deployGitHubRef(ctx context.Context, site sites.Site, ref, trig
 	if err := replaceSymlink(nextStagingPath, currentStagingPath); err != nil {
 		return Result{}, fmt.Errorf("activate current staging link: %w", err)
 	}
+	currentSwitched = true
 	logs.add("deployment", "Prepared .current from "+releaseID)
 	if err := runDeploymentScript(ctx, site, releasePath, currentStagingPath, deploymentID, releaseID, commit.SHA, logs); err != nil {
 		return Result{}, err
@@ -259,10 +272,50 @@ func (r *Runner) deployGitHubRef(ctx context.Context, site sites.Site, ref, trig
 	if err := r.activateRelease(ctx, site.ID, releaseID); err != nil {
 		return Result{}, err
 	}
+	if site.HealthCheckURL != "" {
+		if err := steps.begin("health_check", "Verify activated release", "health"); err != nil {
+			return Result{}, err
+		}
+		logs.add("deployment", "Running health check against "+site.HealthCheckURL)
+		if err := checkHealth(ctx, site.HealthCheckURL); err != nil {
+			_ = r.setReleaseHealth(ctx, releaseID, "failed")
+			_ = steps.finish("health_check", "failed", nil)
+			finalStatus = "rolled_back"
+			finalErrorCode = "HEALTH_CHECK_FAILED"
+			if previousReleaseErr == nil {
+				logs.add("deployment", "Health check failed; rolling back application files to "+previousRelease.CommitSHA)
+				if rollbackErr := r.restoreRelease(ctx, site, previousRelease, deploymentID, logs); rollbackErr != nil {
+					finalStatus = "failed"
+					finalErrorCode = "ROLLBACK_FAILED"
+					return Result{}, fmt.Errorf("health check failed and automatic rollback failed: %w; rollback: %v", err, rollbackErr)
+				}
+				if rollbackErr := r.activateRelease(ctx, site.ID, previousRelease.ID); rollbackErr != nil {
+					finalStatus = "failed"
+					finalErrorCode = "ROLLBACK_FAILED"
+					return Result{}, fmt.Errorf("health check failed and previous release could not be activated: %w", rollbackErr)
+				}
+				currentSwitched = false
+			} else {
+				finalStatus = "failed"
+			}
+			return Result{}, fmt.Errorf("health check failed: %w", err)
+		}
+		_ = r.setReleaseHealth(ctx, releaseID, "healthy")
+		if err := steps.finish("health_check", "completed", nil); err != nil {
+			return Result{}, err
+		}
+	} else {
+		logs.add("deployment", "Health check skipped; configure a health check URL in site Settings")
+		_ = r.setReleaseHealth(ctx, releaseID, "skipped")
+	}
 	if err := steps.finish("publish", "completed", nil); err != nil {
 		return Result{}, err
 	}
+	if err := r.pruneReleases(ctx, site); err != nil {
+		logs.add("deployment", "Release retention cleanup skipped: "+err.Error())
+	}
 	failed = false
+	finalStatus = "deployed"
 	return Result{DeploymentID: deploymentID, ReleaseID: releaseID, ReleasePath: releasePath, Commit: commit.SHA, Status: "deployed"}, nil
 }
 
@@ -286,6 +339,8 @@ func runDeploymentScript(ctx context.Context, site sites.Site, releasePath, curr
 		"RELEASE_ID="+releaseID,
 		"DEPLOYMENT_ID="+deploymentID,
 		"COMMIT_SHA="+commitSHA,
+		"SHARED_ROOT="+filepath.Join(site.ProjectRoot, ".zion", "shared"),
+		"SHARED_DIRECTORIES="+strings.Join(site.SharedDirectories, ","),
 	)
 	output := &liveLogWriter{logs: logs, channel: "deployment"}
 	command.Stdout = output
