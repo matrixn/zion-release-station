@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/matrixn/zion-release-station/internal/detection"
+	"github.com/matrixn/zion-release-station/internal/githubconnector"
 	"github.com/matrixn/zion-release-station/internal/pathsecurity"
 	"github.com/matrixn/zion-release-station/internal/permissions"
 	"github.com/matrixn/zion-release-station/internal/sites"
@@ -620,7 +621,13 @@ func (s *Server) handleSiteCommits(w http.ResponseWriter, r *http.Request, siteI
 	if branch == "" {
 		branch = site.Repository.GitHubDefaultBranch
 	}
-	commits, err := s.githubManaged.Commits(r.Context(), *site.Repository.GitHubInstallationID, site.Repository.GitHubFullName, branch, 50)
+	githubContext := githubconnector.WithRequestContext(r.Context(), githubconnector.RequestContext{
+		SiteID:           site.ID,
+		SiteName:         site.Name,
+		SiteURL:          site.Hostname,
+		GitHubRepository: site.Repository.GitHubFullName,
+	})
+	commits, err := s.githubManaged.Commits(githubContext, *site.Repository.GitHubInstallationID, site.Repository.GitHubFullName, branch, 50)
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "GITHUB_CONNECTOR_UNAVAILABLE", err.Error())
 		return

@@ -130,6 +130,12 @@ func (r *Runner) deployGitHubRef(ctx context.Context, site sites.Site, ref, trig
 	if site.Repository.GitHubInstallationID == nil || site.Repository.GitHubFullName == "" {
 		return Result{}, fmt.Errorf("site %q has incomplete GitHub repository metadata", site.ID)
 	}
+	ctx = githubconnector.WithRequestContext(ctx, githubconnector.RequestContext{
+		SiteID:           site.ID,
+		SiteName:         site.Name,
+		SiteURL:          site.Hostname,
+		GitHubRepository: site.Repository.GitHubFullName,
+	})
 	if err := os.MkdirAll(site.ProjectRoot, 0o755); err != nil {
 		return Result{}, fmt.Errorf("create project root: %w", err)
 	}

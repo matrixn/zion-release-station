@@ -5,6 +5,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/matrixn/zion-release-station/internal/githubconnector"
 )
 
 func (s *Server) handleGitHubConnection(w http.ResponseWriter, r *http.Request) {
@@ -294,7 +296,18 @@ func (s *Server) handleGitHubBranches(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "INVALID_INSTALLATION", "installation_id must be a positive integer.")
 		return
 	}
-	branches, err := s.githubManaged.Branches(r.Context(), installationID, parts[0]+"/"+parts[1])
+	githubContext := r.Context()
+	if siteID := strings.TrimSpace(r.URL.Query().Get("site_id")); siteID != "" {
+		if site, siteErr := s.sites.Get(r.Context(), siteID); siteErr == nil && site.Repository != nil {
+			githubContext = githubconnector.WithRequestContext(githubContext, githubconnector.RequestContext{
+				SiteID:           site.ID,
+				SiteName:         site.Name,
+				SiteURL:          site.Hostname,
+				GitHubRepository: parts[0] + "/" + parts[1],
+			})
+		}
+	}
+	branches, err := s.githubManaged.Branches(githubContext, installationID, parts[0]+"/"+parts[1])
 	if err != nil {
 		writeError(w, http.StatusBadGateway, "GITHUB_CONNECTOR_UNAVAILABLE", "The repository branches could not be read.")
 		return

@@ -26,6 +26,22 @@ type Client struct {
 	http       *http.Client
 }
 
+type requestContextKey struct{}
+
+// RequestContext carries non-sensitive ReleaseStation correlation data to the
+// connector debug console. It is kept in context so the public client API can
+// remain backwards compatible for repository-wide requests.
+type RequestContext struct {
+	SiteID           string
+	SiteName         string
+	SiteURL          string
+	GitHubRepository string
+}
+
+func WithRequestContext(ctx context.Context, value RequestContext) context.Context {
+	return context.WithValue(ctx, requestContextKey{}, value)
+}
+
 type Session struct {
 	ID           string `json:"id"`
 	AuthorizeURL string `json:"authorize_url"`
@@ -339,6 +355,7 @@ func (c *Client) DownloadArchive(ctx context.Context, installationID int64, full
 	token := c.token
 	c.mu.RUnlock()
 	request.Header.Set("Authorization", "Bearer "+token)
+	setRequestContextHeaders(request, ctx)
 	response, err := c.http.Do(request)
 	if err != nil {
 		return fmt.Errorf("download GitHub archive: %w", err)
@@ -388,6 +405,7 @@ func (c *Client) requestWithAuth(ctx context.Context, method, endpoint string, b
 		return err
 	}
 	request.Header.Set("Accept", "application/json")
+	setRequestContextHeaders(request, ctx)
 	if authenticated {
 		c.mu.RLock()
 		token := c.token
@@ -413,6 +431,28 @@ func (c *Client) requestWithAuth(ctx context.Context, method, endpoint string, b
 		return fmt.Errorf("decode connector response: %w", err)
 	}
 	return nil
+}
+
+func setRequestContextHeaders(request *http.Request, ctx context.Context) {
+	value, ok := ctx.Value(requestContextKey{}).(RequestContext)
+	if !ok {
+		return
+	}
+	setSafeRequestHeader(request, "X-ReleaseStation-Site-ID", value.SiteID)
+	setSafeRequestHeader(request, "X-ReleaseStation-Site", value.SiteName)
+	setSafeRequestHeader(request, "X-ReleaseStation-Site-URL", value.SiteURL)
+	setSafeRequestHeader(request, "X-ReleaseStation-Repository", value.GitHubRepository)
+}
+
+func setSafeRequestHeader(request *http.Request, name, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" || strings.ContainsAny(value, "\r\n") {
+		return
+	}
+	if len(value) > 2048 {
+		value = value[:2048]
+	}
+	request.Header.Set(name, value)
 }
 
 func (c *Client) baseURLValue() string {

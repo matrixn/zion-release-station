@@ -1160,7 +1160,8 @@ async function loadGithubBranches(repository: GithubRepository) {
   githubBranchesError.value = '';
   try {
     const [owner, name] = repository.full_name.split('/');
-    const response = await fetch(`/releasestation/api/v1/integrations/github/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/branches?installation_id=${repository.installation_id}`, { headers: { Accept: 'application/json' } });
+    const siteQuery = selectedSite.value?.id ? `&site_id=${encodeURIComponent(selectedSite.value.id)}` : '';
+    const response = await fetch(`/releasestation/api/v1/integrations/github/repositories/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/branches?installation_id=${repository.installation_id}${siteQuery}`, { headers: { Accept: 'application/json' } });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) throw new Error(payload.error?.message || 'Nu am putut citi branch-urile repository-ului.');
     githubBranches.value = Array.isArray(payload.data) ? payload.data : [];

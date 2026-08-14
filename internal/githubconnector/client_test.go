@@ -45,13 +45,20 @@ func TestCommitsDecodesConnectorEnvelope(t *testing.T) {
 		if r.URL.Query().Get("installation_id") != "42" || r.URL.Query().Get("branch") != "main" {
 			t.Fatalf("unexpected commits query %q", r.URL.RawQuery)
 		}
+		if got := r.Header.Get("X-ReleaseStation-Site-ID"); got != "site_test" {
+			t.Fatalf("unexpected site context %q", got)
+		}
+		if got := r.Header.Get("X-ReleaseStation-Repository"); got != "acme/site" {
+			t.Fatalf("unexpected repository context %q", got)
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"commits":[{"sha":"abc123","message":"Initial commit","branch":"main"}]}`)
 	}))
 	defer server.Close()
 
 	client := NewClient(config.Config{GitHubConnectorURL: server.URL, GitHubConnectorToken: "credential", InstanceID: "rs_test"})
-	commits, err := client.Commits(context.Background(), 42, "acme/site", "main", 50)
+	requestContext := WithRequestContext(context.Background(), RequestContext{SiteID: "site_test", SiteName: "test.com", SiteURL: "https://test.com", GitHubRepository: "acme/site"})
+	commits, err := client.Commits(requestContext, 42, "acme/site", "main", 50)
 	if err != nil {
 		t.Fatalf("read commits: %v", err)
 	}

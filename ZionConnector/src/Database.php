@@ -124,11 +124,17 @@ final class Database
                 response_headers_json TEXT NOT NULL,
                 response_body TEXT NOT NULL,
                 duration_ms INTEGER NOT NULL DEFAULT 0,
+                github_repository TEXT NULL,
+                release_station_instance_id TEXT NULL,
+                release_station_site_id TEXT NULL,
+                release_station_site TEXT NULL,
+                release_station_url TEXT NULL,
                 created_at TEXT NOT NULL
             );
             CREATE INDEX IF NOT EXISTS idx_debug_logs_created_at ON debug_logs(created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_debug_logs_request_id ON debug_logs(request_id);
         SQL);
+        $this->ensureDebugLogColumns();
     }
 
     private function migrateMariaDb(): void
@@ -217,19 +223,58 @@ final class Database
                 response_headers_json LONGTEXT NOT NULL,
                 response_body LONGTEXT NOT NULL,
                 duration_ms BIGINT NOT NULL DEFAULT 0,
+                github_repository VARCHAR(512) NULL,
+                release_station_instance_id VARCHAR(128) NULL,
+                release_station_site_id VARCHAR(255) NULL,
+                release_station_site VARCHAR(255) NULL,
+                release_station_url VARCHAR(2048) NULL,
                 created_at VARCHAR(32) NOT NULL,
                 INDEX idx_debug_logs_created_at (created_at),
                 INDEX idx_debug_logs_request_id (request_id)
             ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
         SQL);
+        $this->ensureDebugLogColumns();
+    }
+
+    private function ensureDebugLogColumns(): void
+    {
+        $columns = [
+            'github_repository' => $this->mysql ? 'VARCHAR(512) NULL' : 'TEXT NULL',
+            'release_station_instance_id' => $this->mysql ? 'VARCHAR(128) NULL' : 'TEXT NULL',
+            'release_station_site_id' => $this->mysql ? 'VARCHAR(255) NULL' : 'TEXT NULL',
+            'release_station_site' => $this->mysql ? 'VARCHAR(255) NULL' : 'TEXT NULL',
+            'release_station_url' => $this->mysql ? 'VARCHAR(2048) NULL' : 'TEXT NULL',
+        ];
+        foreach ($columns as $name => $definition) {
+            if ($this->debugColumnExists($name)) {
+                continue;
+            }
+            $this->pdo->exec('ALTER TABLE debug_logs ADD COLUMN ' . $name . ' ' . $definition);
+        }
+    }
+
+    private function debugColumnExists(string $column): bool
+    {
+        if ($this->mysql) {
+            $statement = $this->pdo->prepare('SELECT COUNT(*) FROM information_schema.columns WHERE table_schema = DATABASE() AND table_name = \'debug_logs\' AND column_name = :column');
+            $statement->execute(['column' => $column]);
+            return (int) $statement->fetchColumn() > 0;
+        }
+        $statement = $this->pdo->query('PRAGMA table_info(debug_logs)');
+        foreach ($statement->fetchAll() as $row) {
+            if (is_array($row) && (string) ($row['name'] ?? '') === $column) {
+                return true;
+            }
+        }
+        return false;
     }
 
     /** @param array<string,mixed> $entry */
     public function recordDebugLog(array $entry): int
     {
         $statement = $this->pdo->prepare(<<<'SQL'
-            INSERT INTO debug_logs (request_id, direction, source, method, url, status, request_headers_json, request_body, response_headers_json, response_body, duration_ms, created_at)
-            VALUES (:request_id, :direction, :source, :method, :url, :status, :request_headers_json, :request_body, :response_headers_json, :response_body, :duration_ms, :created_at)
+            INSERT INTO debug_logs (request_id, direction, source, method, url, status, request_headers_json, request_body, response_headers_json, response_body, duration_ms, github_repository, release_station_instance_id, release_station_site_id, release_station_site, release_station_url, created_at)
+            VALUES (:request_id, :direction, :source, :method, :url, :status, :request_headers_json, :request_body, :response_headers_json, :response_body, :duration_ms, :github_repository, :release_station_instance_id, :release_station_site_id, :release_station_site, :release_station_url, :created_at)
         SQL);
         $statement->execute([
             'request_id' => (string) ($entry['request_id'] ?? ''),
@@ -243,6 +288,11 @@ final class Database
             'response_headers_json' => (string) ($entry['response_headers_json'] ?? '{}'),
             'response_body' => (string) ($entry['response_body'] ?? ''),
             'duration_ms' => (int) ($entry['duration_ms'] ?? 0),
+            'github_repository' => $this->nullableString($entry['github_repository'] ?? null),
+            'release_station_instance_id' => $this->nullableString($entry['release_station_instance_id'] ?? null),
+            'release_station_site_id' => $this->nullableString($entry['release_station_site_id'] ?? null),
+            'release_station_site' => $this->nullableString($entry['release_station_site'] ?? null),
+            'release_station_url' => $this->nullableString($entry['release_station_url'] ?? null),
             'created_at' => (string) ($entry['created_at'] ?? gmdate('c')),
         ]);
         return (int) $this->pdo->lastInsertId();
@@ -275,7 +325,7 @@ final class Database
         }
         $query = trim((string) ($filters['q'] ?? ''));
         if ($query !== '') {
-            $where[] = '(request_id LIKE :query OR url LIKE :query OR request_body LIKE :query OR response_body LIKE :query)';
+            $where[] = '(request_id LIKE :query OR url LIKE :query OR github_repository LIKE :query OR release_station_site LIKE :query OR release_station_site_id LIKE :query OR request_body LIKE :query OR response_body LIKE :query)';
             $parameters['query'] = '%' . $query . '%';
         }
         $clause = $where === [] ? '' : ' WHERE ' . implode(' AND ', $where);
@@ -291,6 +341,12 @@ final class Database
     public function clearDebugLogs(): void
     {
         $this->pdo->exec('DELETE FROM debug_logs');
+    }
+
+    private function nullableString(mixed $value): ?string
+    {
+        $value = trim((string) ($value ?? ''));
+        return $value === '' ? null : $value;
     }
 
     /** @return array<string,mixed>|null */
