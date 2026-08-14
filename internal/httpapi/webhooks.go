@@ -20,6 +20,7 @@ import (
 )
 
 const maxWebhookPayload = 1 << 20
+const publicWebhookPrefix = "/releasestation/api/v1/webhooks"
 
 type webhookView struct {
 	ID               string `json:"id,omitempty"`
@@ -47,7 +48,7 @@ func (s *Server) handleIncomingWebhook(provider string, w http.ResponseWriter, r
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only POST is supported.")
 		return
 	}
-	token := strings.Trim(strings.TrimPrefix(r.URL.Path, "/webhooks/"+provider+"/"), "/")
+	token := webhookTokenFromPath(r.URL.Path, provider)
 	if token == "" {
 		writeError(w, http.StatusNotFound, "WEBHOOK_NOT_FOUND", "Webhook endpoint not found.")
 		return
@@ -268,6 +269,15 @@ func normalizeRepository(value string) string {
 	return strings.Trim(strings.TrimSuffix(strings.TrimSpace(value), ".git"), "/")
 }
 
+func webhookTokenFromPath(path, provider string) string {
+	marker := "/webhooks/" + provider + "/"
+	index := strings.LastIndex(path, marker)
+	if index < 0 {
+		return ""
+	}
+	return strings.Trim(strings.TrimPrefix(path[index:], marker), "/")
+}
+
 func sameRepository(site sites.Site, incoming string) bool {
 	configured := ""
 	if site.Repository != nil {
@@ -340,7 +350,7 @@ func (s *Server) webhookForSite(ctx context.Context, siteID string) (webhookView
 		if err != nil {
 			return webhookView{}, fmt.Errorf("read site webhook token: %w", err)
 		}
-		view.Endpoint = "/webhooks/" + item.provider + "/" + string(token)
+		view.Endpoint = publicWebhookPrefix + "/" + item.provider + "/" + string(token)
 	}
 	return view, nil
 }
@@ -389,7 +399,7 @@ func (s *Server) rotateSiteWebhook(ctx context.Context, site sites.Site, provide
 	if err := tx.Commit(); err != nil {
 		return webhookView{}, "", fmt.Errorf("commit webhook rotation: %w", err)
 	}
-	view := webhookView{ID: id, SiteID: site.ID, Provider: provider, Enabled: true, Configured: true, SecretConfigured: true, Endpoint: "/webhooks/" + provider + "/" + token}
+	view := webhookView{ID: id, SiteID: site.ID, Provider: provider, Enabled: true, Configured: true, SecretConfigured: true, Endpoint: publicWebhookPrefix + "/" + provider + "/" + token}
 	return view, secret, nil
 }
 
