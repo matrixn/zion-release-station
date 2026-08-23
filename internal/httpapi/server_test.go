@@ -13,6 +13,7 @@ import (
 
 	"github.com/matrixn/zion-release-station/internal/config"
 	"github.com/matrixn/zion-release-station/internal/database"
+	"github.com/matrixn/zion-release-station/internal/sites"
 )
 
 func TestHealthEndpointReportsReadyDatabase(t *testing.T) {
@@ -170,6 +171,16 @@ func TestWebStationDiscoveryAndSiteCRUDAPI(t *testing.T) {
 		}
 	}
 	server := NewServer(config.Config{WebRoot: t.TempDir(), WebStationRoots: []string{webStationRoot}, Version: "0.1.0-test"}, db, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, err := server.sites.Create(context.Background(), sites.Input{
+		Name:        "Existing site",
+		Slug:        "example-test",
+		ProjectRoot: t.TempDir(),
+		Framework:   "php",
+		Strategy:    "in_place",
+		Status:      "active",
+	}); err != nil {
+		t.Fatalf("create slug collision fixture: %v", err)
+	}
 
 	recorder := httptest.NewRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/releasestation/api/v1/webstation/discover", nil)
@@ -182,7 +193,7 @@ func TestWebStationDiscoveryAndSiteCRUDAPI(t *testing.T) {
 	request = httptest.NewRequest(http.MethodPost, "/releasestation/api/v1/webstation/import", strings.NewReader(`{"paths":["`+siteRoot+`"]}`))
 	request.Header.Set("Content-Type", "application/json")
 	server.http.Handler.ServeHTTP(recorder, request)
-	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"imported"`) {
+	if recorder.Code != http.StatusOK || !strings.Contains(recorder.Body.String(), `"imported"`) || !strings.Contains(recorder.Body.String(), `"slug":"example-test-2"`) {
 		t.Fatalf("unexpected import response: %d %q", recorder.Code, recorder.Body.String())
 	}
 

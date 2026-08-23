@@ -365,6 +365,17 @@ func (s *Store) FindByProjectRoot(ctx context.Context, projectRoot string) (Site
 	return s.Get(ctx, id)
 }
 
+// SlugExists reports whether a slug is already reserved by the database.
+// Archived sites are included because the database keeps the slug UNIQUE for
+// the lifetime of the record.
+func (s *Store) SlugExists(ctx context.Context, slug string) (bool, error) {
+	var exists int
+	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM sites WHERE slug = ?)`, slug).Scan(&exists); err != nil {
+		return false, fmt.Errorf("check site slug: %w", err)
+	}
+	return exists != 0, nil
+}
+
 func (s *Store) Create(ctx context.Context, input Input) (Site, error) {
 	if err := validateInput(input); err != nil {
 		return Site{}, err

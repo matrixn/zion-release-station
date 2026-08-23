@@ -747,6 +747,16 @@ func (s *Server) handleWebStationImport(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		input := discoveredInput(candidate)
+		requestedSlug := input.Slug
+		input.Slug, err = s.availableImportSlug(r.Context(), requestedSlug)
+		if err != nil {
+			s.logger.Warn("Web Station import failed", "stage", "reserve_slug", "project_root", candidate.ProjectRoot, "slug", requestedSlug, "error", err)
+			writeError(w, http.StatusInternalServerError, "SITES_UNAVAILABLE", err.Error())
+			return
+		}
+		if input.Slug != requestedSlug {
+			s.logger.Warn("Web Station import slug collision resolved", "project_root", candidate.ProjectRoot, "requested_slug", requestedSlug, "assigned_slug", input.Slug)
+		}
 		created, err := s.sites.Create(r.Context(), input)
 		if err != nil {
 			s.logger.Warn("Web Station import failed", "stage", "create_site", "project_root", candidate.ProjectRoot, "error", err)
@@ -761,6 +771,26 @@ func (s *Server) handleWebStationImport(w http.ResponseWriter, r *http.Request) 
 		"imported": imported,
 		"skipped":  skipped,
 	}})
+}
+
+func (s *Server) availableImportSlug(ctx context.Context, base string) (string, error) {
+	base = normalizeSlug(base)
+	if base == "" {
+		base = "site"
+	}
+	for suffix := 0; ; suffix++ {
+		candidate := base
+		if suffix > 0 {
+			candidate = fmt.Sprintf("%s-%d", base, suffix+1)
+		}
+		exists, err := s.sites.SlugExists(ctx, candidate)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+	}
 }
 
 func (s *Server) discoverSites(ctx context.Context) ([]webstation.DiscoveredSite, error) {

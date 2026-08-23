@@ -45,6 +45,36 @@ func TestStoreCreatesUpdatesListsAndArchivesSite(t *testing.T) {
 	}
 }
 
+func TestStoreSlugExistsIncludesArchivedSites(t *testing.T) {
+	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
+	if err != nil {
+		t.Fatalf("open database: %v", err)
+	}
+	defer db.Close()
+	store := NewStore(db)
+	site, err := store.Create(context.Background(), Input{
+		Name:        "Archived site",
+		Slug:        "archived-site",
+		ProjectRoot: t.TempDir(),
+		Framework:   "php",
+		Strategy:    "in_place",
+		Status:      "active",
+	})
+	if err != nil {
+		t.Fatalf("create site: %v", err)
+	}
+	if err := store.Archive(context.Background(), site.ID); err != nil {
+		t.Fatalf("archive site: %v", err)
+	}
+	exists, err := store.SlugExists(context.Background(), "archived-site")
+	if err != nil {
+		t.Fatalf("check slug: %v", err)
+	}
+	if !exists {
+		t.Fatal("expected archived site slug to remain reserved")
+	}
+}
+
 func TestStorePersistsRepositorySelectionWithSite(t *testing.T) {
 	db, err := database.Open(context.Background(), filepath.Join(t.TempDir(), "releasestation.db"))
 	if err != nil {
