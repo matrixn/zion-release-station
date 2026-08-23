@@ -1491,26 +1491,31 @@ async function importSelectedSites() {
   discoveryLoading.value = true;
   discoveryError.value = '';
   importMessage.value = '';
+  discoveryPhase.value = `Importing ${selectedDiscoveredPaths.value.length} selected site${selectedDiscoveredPaths.value.length === 1 ? '' : 's'}`;
+  console.info('[ReleaseStation] Web Station import started', { paths: selectedDiscoveredPaths.value });
   try {
     const response = await fetch('/releasestation/api/v1/webstation/import', {
       method: 'POST',
       headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
       body: JSON.stringify({ paths: selectedDiscoveredPaths.value }),
     });
-    if (!response.ok) throw new Error('import');
-    const payload = await response.json();
-    const imported = payload.data?.imported || [];
-    const skipped = payload.data?.skipped || [];
+    const payload = await response.json().catch(() => null);
+    console.info('[ReleaseStation] Web Station import response', { status: response.status, ok: response.ok, payload });
+    if (!response.ok) throw new Error(payload?.error?.message || `Import endpoint returned HTTP ${response.status}.`);
+    const imported = payload?.data?.imported || [];
+    const skipped = payload?.data?.skipped || [];
     importMessage.value = `${imported.length} site${imported.length === 1 ? '' : 's'} imported${skipped.length ? `, ${skipped.length} already managed` : ''}.`;
     await loadSites();
     selectedDiscoveredPaths.value = [];
     discoveredSites.value = discoveredSites.value.map((site) => ({ ...site, already_managed: imported.some((item: Site) => item.project_root === site.project_root) || site.already_managed }));
     window.requestAnimationFrame(() => discoveryDialog.value?.scrollTo({ top: 0, behavior: 'smooth' }));
     startImportCloseCountdown();
-  } catch {
+  } catch (error) {
     clearImportCloseTimer();
     importClosing.value = false;
-    discoveryError.value = 'Import failed. Check the site permissions and try again.';
+    discoveryPhase.value = 'Import failed';
+    discoveryError.value = error instanceof Error ? `Import failed: ${error.message}` : 'Import failed. Check the site permissions and try again.';
+    console.error('[ReleaseStation] Web Station import failed', error);
   } finally {
     discoveryLoading.value = false;
   }

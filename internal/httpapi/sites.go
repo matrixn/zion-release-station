@@ -693,6 +693,7 @@ func (s *Server) handleWebStationDiscover(w http.ResponseWriter, r *http.Request
 }
 
 func (s *Server) handleWebStationImport(w http.ResponseWriter, r *http.Request) {
+	s.logger.Info("Web Station import request received", "method", r.Method, "path", r.URL.Path)
 	if r.Method != http.MethodPost {
 		writeError(w, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED", "Only POST is supported.")
 		return
@@ -700,19 +701,29 @@ func (s *Server) handleWebStationImport(w http.ResponseWriter, r *http.Request) 
 	var payload struct {
 		Paths []string `json:"paths"`
 	}
-	if err := decodeJSON(w, r, &payload); err != nil || len(payload.Paths) == 0 {
+	if err := decodeJSON(w, r, &payload); err != nil {
+		s.logger.Warn("Web Station import rejected", "stage", "decode_payload", "error", err)
+		writeError(w, http.StatusBadRequest, "INVALID_IMPORT", err.Error())
+		return
+	}
+	s.logger.Info("Web Station import payload decoded", "path_count", len(payload.Paths))
+	if len(payload.Paths) == 0 {
+		s.logger.Warn("Web Station import rejected", "stage", "validate_payload", "reason", "no_paths")
 		writeError(w, http.StatusBadRequest, "INVALID_IMPORT", "Select at least one discovered site.")
 		return
 	}
 	items, err := s.discoverSites(r.Context())
 	if err != nil {
+		s.logger.Warn("Web Station import failed", "stage", "discover", "error", err)
 		writeError(w, http.StatusInternalServerError, "WEBSTATION_UNAVAILABLE", err.Error())
 		return
 	}
+	s.logger.Info("Web Station import discovery completed", "discovered_count", len(items))
 	selected := make(map[string]struct{}, len(payload.Paths))
 	for _, path := range payload.Paths {
 		canonical, err := pathsecurity.CanonicalDirectory(path)
 		if err != nil {
+			s.logger.Warn("Web Station import rejected", "stage", "canonicalize_path", "path", path, "error", err)
 			writeError(w, http.StatusBadRequest, "INVALID_IMPORT", "One of the selected paths is no longer available.")
 			return
 		}
@@ -725,21 +736,27 @@ func (s *Server) handleWebStationImport(w http.ResponseWriter, r *http.Request) 
 		if _, ok := selected[candidate.ProjectRoot]; !ok {
 			continue
 		}
+		s.logger.Info("Web Station import candidate selected", "project_root", candidate.ProjectRoot, "web_root", candidate.WebRoot, "permission_status", candidate.Permissions.Status)
 		if _, err := s.sites.FindByProjectRoot(r.Context(), candidate.ProjectRoot); err == nil {
 			skipped = append(skipped, candidate.ProjectRoot)
+			s.logger.Info("Web Station import candidate skipped", "project_root", candidate.ProjectRoot, "reason", "already_managed")
 			continue
 		} else if !errors.Is(err, sites.ErrNotFound) {
+			s.logger.Warn("Web Station import failed", "stage", "find_existing_site", "project_root", candidate.ProjectRoot, "error", err)
 			writeError(w, http.StatusInternalServerError, "SITES_UNAVAILABLE", err.Error())
 			return
 		}
 		input := discoveredInput(candidate)
 		created, err := s.sites.Create(r.Context(), input)
 		if err != nil {
+			s.logger.Warn("Web Station import failed", "stage", "create_site", "project_root", candidate.ProjectRoot, "error", err)
 			writeError(w, http.StatusBadRequest, "INVALID_IMPORT", err.Error())
 			return
 		}
 		imported = append(imported, created)
+		s.logger.Info("Web Station import candidate imported", "site_id", created.ID, "project_root", candidate.ProjectRoot)
 	}
+	s.logger.Info("Web Station import completed", "imported_count", len(imported), "skipped_count", len(skipped))
 	writeJSON(w, http.StatusOK, map[string]any{"data": map[string]any{
 		"imported": imported,
 		"skipped":  skipped,

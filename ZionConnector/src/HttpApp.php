@@ -421,7 +421,12 @@ final class HttpApp
     private function webhookEvents(string $instanceId): void
     {
         $afterID = max(0, (int) ($_GET['after_id'] ?? 0));
-        $events = $this->database->webhookEvents($instanceId, $afterID, (int) ($_GET['limit'] ?? 50));
+        $events = array_map(static function (array $event): array {
+            // MariaDB and SQLite expose the TINYINT/INTEGER storage value as
+            // 0/1. Keep the connector API contract JSON-boolean for Go.
+            $event['deleted'] = (bool) ($event['deleted'] ?? false);
+            return $event;
+        }, $this->database->webhookEvents($instanceId, $afterID, (int) ($_GET['limit'] ?? 50)));
         $this->json(200, ['events' => $events]);
     }
 
