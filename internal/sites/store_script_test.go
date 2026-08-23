@@ -45,14 +45,38 @@ cp -a "$CONTENT_DIR"/. "$STAGING_DIR"/
 	}
 }
 
-func TestDefaultAtomicScriptBuildsComposerProjectsAndRunsAvailableTests(t *testing.T) {
+func TestEffectiveDeployScriptMigratesComposerEnabledGeneratedDefault(t *testing.T) {
+	previousGenerated := `#!/bin/sh
+set -eu
+SOURCE_DIR="${CURRENT_DIR:-${PROJECT_ROOT}/.current}"
+TARGET_DIR="${WEB_ROOT:-${PROJECT_ROOT:?PROJECT_ROOT is required}}"
+RELEASE_ID="${RELEASE_ID:-manual}"
+STATE_DIR="${PROJECT_ROOT:?PROJECT_ROOT is required}/.zion"
+STAGING_DIR="${STATE_DIR}/document-root-staging-${RELEASE_ID}"
+BACKUP_DIR="${STATE_DIR}/document-root-backup-${RELEASE_ID}"
+CONTENT_DIR="$SOURCE_DIR"
+VISIBLE_ENTRY_COUNT=0
+if [ -f "$CONTENT_DIR/composer.json" ]; then
+  composer install --no-interaction --prefer-dist --optimize-autoloader
+fi
+cp -a "$CONTENT_DIR"/. "$STAGING_DIR"/
+`
+
+	if got := EffectiveDeployScript("atomic", previousGenerated); got != DefaultAtomicDeployScript {
+		t.Fatalf("Composer-enabled generated default was not migrated")
+	}
+}
+
+func TestDefaultAtomicScriptUsesForgeStyleDeploymentPrimitives(t *testing.T) {
 	for _, fragment := range []string{
-		`if [ -f "$CONTENT_DIR/composer.json" ]; then`,
-		`install --no-interaction --prefer-dist --optimize-autoloader`,
-		`run-script --list`,
-		`run-script test --no-interaction`,
-		`vendor/bin/phpunit`,
-		`vendor/bin/pest`,
+		`CREATE_RELEASE() {`,
+		`FORGE_RELEASE_DIRECTORY`,
+		`install --no-dev --no-interaction --prefer-dist --optimize-autoloader`,
+		`"$FORGE_NPM" ci || "$FORGE_NPM" install`,
+		`$CONTENT_DIR/scanner/package.json`,
+		`"$FORGE_PHP" artisan migrate --force`,
+		`ACTIVATE_RELEASE() {`,
+		`RESTART_QUEUES() {`,
 	} {
 		if !strings.Contains(DefaultAtomicDeployScript, fragment) {
 			t.Fatalf("default script does not contain Composer step %q", fragment)

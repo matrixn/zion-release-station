@@ -93,130 +93,163 @@ type Store struct {
 	db *sql.DB
 }
 
-// DefaultAtomicDeployScript keeps .current/.zion as ReleaseStation state and
-// publishes the prepared application directly into the configured document
-// root. This is deliberately copy-based because the document root also owns
-// ReleaseStation's local release metadata and cannot be renamed as a whole.
+// DefaultAtomicDeployScript is intentionally written like a small Forge-style
+// deployment recipe. Release Station supplies the FORGE_* variables while the
+// script keeps build commands readable and publishes the prepared release only
+// after all build steps have completed successfully.
 const DefaultAtomicDeployScript = `#!/bin/sh
 set -eu
 
-SOURCE_DIR="${CURRENT_DIR:-${PROJECT_ROOT}/.current}"
+FORGE_RELEASE_DIRECTORY="${FORGE_RELEASE_DIRECTORY:-${RELEASE_DIR:-${CURRENT_DIR:-${PROJECT_ROOT:?PROJECT_ROOT is required}/.current}}}"
+FORGE_PHP="${FORGE_PHP:-php}"
+FORGE_COMPOSER="${FORGE_COMPOSER:-composer}"
+FORGE_NPM="${FORGE_NPM:-npm}"
 TARGET_DIR="${WEB_ROOT:-${PROJECT_ROOT:?PROJECT_ROOT is required}}"
 RELEASE_ID="${RELEASE_ID:-manual}"
 STATE_DIR="${PROJECT_ROOT:?PROJECT_ROOT is required}/.zion"
 STAGING_DIR="${STATE_DIR}/document-root-staging-${RELEASE_ID}"
 BACKUP_DIR="${STATE_DIR}/document-root-backup-${RELEASE_ID}"
+CONTENT_DIR="$FORGE_RELEASE_DIRECTORY"
+BACKUP_CREATED=0
+
+CREATE_RELEASE() {
+	[ -d "$FORGE_RELEASE_DIRECTORY" ] || {
+		echo "Release directory does not exist: $FORGE_RELEASE_DIRECTORY" >&2
+		exit 1
+	}
+
+	# GitHub archives normally arrive already flattened. This fallback also
+	# handles an archive wrapper when the script is run against .current.
+	VISIBLE_ENTRY_COUNT=0
+	VISIBLE_DIR=""
+	for ITEM in "$FORGE_RELEASE_DIRECTORY"/*; do
+		[ -e "$ITEM" ] || [ -L "$ITEM" ] || continue
+		VISIBLE_ENTRY_COUNT=$((VISIBLE_ENTRY_COUNT + 1))
+		VISIBLE_DIR="$ITEM"
+	done
+	if [ "$VISIBLE_ENTRY_COUNT" -eq 1 ] && [ -d "$VISIBLE_DIR" ]; then
+		CONTENT_DIR="$VISIBLE_DIR"
+	fi
+	export CONTENT_DIR
+}
+
+restore_backup() {
+	for ITEM in "$TARGET_DIR"/* "$TARGET_DIR"/.[!.]* "$TARGET_DIR"/..?*; do
+		[ -e "$ITEM" ] || [ -L "$ITEM" ] || continue
+		NAME=$(basename "$ITEM")
+		case "$NAME" in
+			.zion|.current) continue ;;
+		esac
+		rm -rf "$ITEM"
+	done
+	for ITEM in "$BACKUP_DIR"/* "$BACKUP_DIR"/.[!.]* "$BACKUP_DIR"/..?*; do
+		[ -e "$ITEM" ] || [ -L "$ITEM" ] || continue
+		mv "$ITEM" "$TARGET_DIR/"
+	done
+}
 
 cleanup() {
-	if [ -d "$BACKUP_DIR" ]; then
-		for ITEM in "$TARGET_DIR"/* "$TARGET_DIR"/.[!.]* "$TARGET_DIR"/..?*; do
-			[ -e "$ITEM" ] || [ -L "$ITEM" ] || continue
-			NAME=$(basename "$ITEM")
-			case "$NAME" in
-				.zion|.current) continue ;;
-			esac
-			rm -rf "$ITEM"
-		done
-		for ITEM in "$BACKUP_DIR"/* "$BACKUP_DIR"/.[!.]* "$BACKUP_DIR"/..?*; do
-			[ -e "$ITEM" ] || [ -L "$ITEM" ] || continue
-			mv "$ITEM" "$TARGET_DIR/"
-		done
+	STATUS=$?
+	if [ "$STATUS" -ne 0 ] && [ "$BACKUP_CREATED" -eq 1 ] && [ -d "$BACKUP_DIR" ]; then
+		restore_backup
 	fi
 	rm -rf "$STAGING_DIR"
 	rm -rf "$BACKUP_DIR"
+	exit "$STATUS"
 }
 trap cleanup EXIT
 
-mkdir -p "$STATE_DIR" "$TARGET_DIR"
-rm -rf "$STAGING_DIR"
-mkdir -p "$STAGING_DIR"
-CONTENT_DIR="$SOURCE_DIR"
-VISIBLE_ENTRY_COUNT=0
-VISIBLE_DIR=""
-for ITEM in "$SOURCE_DIR"/*; do
-	[ -e "$ITEM" ] || [ -L "$ITEM" ] || continue
-	VISIBLE_ENTRY_COUNT=$((VISIBLE_ENTRY_COUNT + 1))
-	VISIBLE_DIR="$ITEM"
-done
-if [ "$VISIBLE_ENTRY_COUNT" -eq 1 ] && [ -d "$VISIBLE_DIR" ]; then
-	CONTENT_DIR="$VISIBLE_DIR"
-fi
+ACTIVATE_RELEASE() {
+	mkdir -p "$STATE_DIR" "$TARGET_DIR" "$STAGING_DIR"
+	rm -rf "$STAGING_DIR"
+	mkdir -p "$STAGING_DIR"
 
-SHARED_ROOT="${SHARED_ROOT:-${PROJECT_ROOT:?PROJECT_ROOT is required}/.zion/shared}"
-mkdir -p "$SHARED_ROOT"
-if [ -n "${SHARED_DIRECTORIES:-}" ]; then
-	OLD_IFS="$IFS"
-	IFS=','
-	for RELATIVE in $SHARED_DIRECTORIES; do
-		[ -n "$RELATIVE" ] || continue
-		SHARED_PATH="$SHARED_ROOT/$RELATIVE"
-		RELEASE_SHARED_PATH="$CONTENT_DIR/$RELATIVE"
-		mkdir -p "$(dirname "$SHARED_PATH")"
-		if [ -e "$RELEASE_SHARED_PATH" ] || [ -L "$RELEASE_SHARED_PATH" ]; then
-			if [ ! -e "$SHARED_PATH" ] && [ ! -L "$SHARED_PATH" ]; then
-				mv "$RELEASE_SHARED_PATH" "$SHARED_PATH"
-			else
-				rm -rf "$RELEASE_SHARED_PATH"
+	SHARED_ROOT="${SHARED_ROOT:-${PROJECT_ROOT:?PROJECT_ROOT is required}/.zion/shared}"
+	mkdir -p "$SHARED_ROOT"
+	if [ -n "${SHARED_DIRECTORIES:-}" ]; then
+		OLD_IFS="$IFS"
+		IFS=','
+		for RELATIVE in $SHARED_DIRECTORIES; do
+			[ -n "$RELATIVE" ] || continue
+			SHARED_PATH="$SHARED_ROOT/$RELATIVE"
+			RELEASE_SHARED_PATH="$CONTENT_DIR/$RELATIVE"
+			mkdir -p "$(dirname "$SHARED_PATH")"
+			if [ -e "$RELEASE_SHARED_PATH" ] || [ -L "$RELEASE_SHARED_PATH" ]; then
+				if [ ! -e "$SHARED_PATH" ] && [ ! -L "$SHARED_PATH" ]; then
+					mv "$RELEASE_SHARED_PATH" "$SHARED_PATH"
+				else
+					rm -rf "$RELEASE_SHARED_PATH"
+				fi
 			fi
-		fi
-		mkdir -p "$SHARED_PATH"
-		mkdir -p "$(dirname "$RELEASE_SHARED_PATH")"
-		ln -s "$SHARED_PATH" "$RELEASE_SHARED_PATH"
-	done
-	IFS="$OLD_IFS"
-fi
-
-if [ -f "$CONTENT_DIR/composer.json" ]; then
-	COMPOSER_BIN="${COMPOSER_BIN:-composer}"
-	echo "Using Composer binary: $COMPOSER_BIN"
-	if ! command -v "$COMPOSER_BIN" >/dev/null 2>&1; then
-		echo "composer.json detected, but Composer is not installed or is not available on PATH" >&2
-		exit 1
+			mkdir -p "$SHARED_PATH"
+			mkdir -p "$(dirname "$RELEASE_SHARED_PATH")"
+			ln -s "$SHARED_PATH" "$RELEASE_SHARED_PATH"
+		done
+		IFS="$OLD_IFS"
 	fi
-	echo "composer.json detected; installing PHP dependencies"
-	"$COMPOSER_BIN" --working-dir="$CONTENT_DIR" install --no-interaction --prefer-dist --optimize-autoloader
 
-	if COMPOSER_SCRIPTS=$("$COMPOSER_BIN" --no-ansi --working-dir="$CONTENT_DIR" run-script --list 2>&1); then
-		if printf '%s\n' "$COMPOSER_SCRIPTS" | awk '$1 == "test" { found = 1 } END { exit !found }'; then
-			echo "Running Composer test script"
-			"$COMPOSER_BIN" --working-dir="$CONTENT_DIR" run-script test --no-interaction
-		elif [ -x "$CONTENT_DIR/vendor/bin/phpunit" ]; then
-			echo "Running PHPUnit"
-			"$CONTENT_DIR/vendor/bin/phpunit"
-		elif [ -x "$CONTENT_DIR/vendor/bin/pest" ]; then
-			echo "Running Pest"
-			"$CONTENT_DIR/vendor/bin/pest"
-		else
-			echo "No Composer test script or PHPUnit/Pest runner found; skipping tests"
-		fi
-	else
-		echo "Unable to inspect Composer scripts" >&2
-		exit 1
+	cp -a "$CONTENT_DIR"/. "$STAGING_DIR"/
+	if [ "$CONTENT_DIR" != "$FORGE_RELEASE_DIRECTORY" ]; then
+		for ITEM in "$FORGE_RELEASE_DIRECTORY"/.[!.]* "$FORGE_RELEASE_DIRECTORY"/..?*; do
+			[ -e "$ITEM" ] || [ -L "$ITEM" ] || continue
+			cp -a "$ITEM" "$STAGING_DIR"/
+		done
 	fi
-fi
 
-cp -a "$CONTENT_DIR"/. "$STAGING_DIR"/
-if [ "$CONTENT_DIR" != "$SOURCE_DIR" ]; then
-	for ITEM in "$SOURCE_DIR"/.[!.]* "$SOURCE_DIR"/..?*; do
+	rm -rf "$BACKUP_DIR"
+	mkdir -p "$BACKUP_DIR"
+	BACKUP_CREATED=1
+	for ITEM in "$TARGET_DIR"/* "$TARGET_DIR"/.[!.]* "$TARGET_DIR"/..?*; do
 		[ -e "$ITEM" ] || [ -L "$ITEM" ] || continue
-		cp -a "$ITEM" "$STAGING_DIR"/
+		NAME=$(basename "$ITEM")
+		case "$NAME" in
+			.zion|.current) continue ;;
+		esac
+		mv "$ITEM" "$BACKUP_DIR/"
 	done
+	cp -a "$STAGING_DIR"/. "$TARGET_DIR"/
+	BACKUP_CREATED=0
+}
+
+RESTART_QUEUES() {
+	if [ -f "$CONTENT_DIR/artisan" ] && command -v "$FORGE_PHP" >/dev/null 2>&1; then
+		"$FORGE_PHP" "$CONTENT_DIR/artisan" horizon:terminate || true
+	fi
+}
+
+# POSIX shell functions are called without the dollar sign and parentheses
+# used by Forge's visual editor: CREATE_RELEASE, ACTIVATE_RELEASE,
+# RESTART_QUEUES.
+CREATE_RELEASE
+cd "$CONTENT_DIR"
+
+if [ -f composer.json ]; then
+	command -v "$FORGE_COMPOSER" >/dev/null 2>&1 || { echo "Composer is not available: $FORGE_COMPOSER" >&2; exit 1; }
+	"$FORGE_COMPOSER" install --no-dev --no-interaction --prefer-dist --optimize-autoloader
 fi
 
-rm -rf "$BACKUP_DIR"
-mkdir -p "$BACKUP_DIR"
-for ITEM in "$TARGET_DIR"/* "$TARGET_DIR"/.[!.]* "$TARGET_DIR"/..?*; do
-	[ -e "$ITEM" ] || [ -L "$ITEM" ] || continue
-	NAME=$(basename "$ITEM")
-	case "$NAME" in
-		.zion|.current) continue ;;
-	esac
-	mv "$ITEM" "$BACKUP_DIR/"
-done
-cp -a "$STAGING_DIR"/. "$TARGET_DIR"/
-rm -rf "$BACKUP_DIR"
-rm -rf "$STAGING_DIR"
-trap - EXIT
+if [ -f package.json ]; then
+	command -v "$FORGE_NPM" >/dev/null 2>&1 || { echo "npm is not available: $FORGE_NPM" >&2; exit 1; }
+	"$FORGE_NPM" ci || "$FORGE_NPM" install
+	"$FORGE_NPM" run build
+fi
+
+if [ -f "$CONTENT_DIR/scanner/package.json" ]; then
+	cd "$CONTENT_DIR/scanner"
+	"$FORGE_NPM" ci
+	"$FORGE_NPM" run build
+	cd "$CONTENT_DIR"
+fi
+
+if [ -f artisan ]; then
+	command -v "$FORGE_PHP" >/dev/null 2>&1 || { echo "PHP is not available: $FORGE_PHP" >&2; exit 1; }
+	"$FORGE_PHP" artisan migrate --force
+	"$FORGE_PHP" artisan storage:link || true
+	"$FORGE_PHP" artisan optimize
+fi
+
+ACTIVATE_RELEASE
+RESTART_QUEUES
 `
 
 // Sites created before the document-root layout or Composer build changes may
@@ -279,8 +312,11 @@ func isLegacyAtomicDeployScript(script string) bool {
 	if strings.Contains(normalized, `STATE_DIR="${PROJECT_ROOT:?PROJECT_ROOT is required}/.zion"`) &&
 		strings.Contains(normalized, `STAGING_DIR="${STATE_DIR}/document-root-staging-${RELEASE_ID}"`) &&
 		strings.Contains(normalized, `cp -a "$CONTENT_DIR"/. "$STAGING_DIR"/`) &&
-		!strings.Contains(normalized, "composer") {
-		return true
+		!strings.Contains(normalized, "FORGE_RELEASE_DIRECTORY") {
+		if !strings.Contains(normalized, "composer") ||
+			(strings.Contains(normalized, `BACKUP_DIR="${STATE_DIR}/document-root-backup-${RELEASE_ID}"`) && strings.Contains(normalized, "VISIBLE_ENTRY_COUNT")) {
+			return true
+		}
 	}
 	return strings.Contains(normalized, `TARGET_PARENT=$(dirname "$TARGET_DIR")`) &&
 		strings.Contains(normalized, `TARGET_NAME=$(basename "$TARGET_DIR")`) &&
