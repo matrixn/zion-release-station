@@ -346,6 +346,7 @@ func runDeploymentScript(ctx context.Context, site sites.Site, releasePath, curr
 		"FORGE_PHP=php",
 		"FORGE_COMPOSER=composer",
 		"FORGE_NPM=npm",
+		"FORGE_NODE=node",
 		"RELEASE_ID="+releaseID,
 		"DEPLOYMENT_ID="+deploymentID,
 		"COMMIT_SHA="+commitSHA,

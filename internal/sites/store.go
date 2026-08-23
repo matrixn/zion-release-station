@@ -104,11 +104,14 @@ FORGE_RELEASE_DIRECTORY="${FORGE_RELEASE_DIRECTORY:-${RELEASE_DIR:-${CURRENT_DIR
 FORGE_PHP="${FORGE_PHP:-php}"
 FORGE_COMPOSER="${FORGE_COMPOSER:-composer}"
 FORGE_NPM="${FORGE_NPM:-npm}"
+FORGE_NODE="${FORGE_NODE:-node}"
 TARGET_DIR="${WEB_ROOT:-${PROJECT_ROOT:?PROJECT_ROOT is required}}"
 RELEASE_ID="${RELEASE_ID:-manual}"
 STATE_DIR="${PROJECT_ROOT:?PROJECT_ROOT is required}/.zion"
 STAGING_DIR="${STATE_DIR}/document-root-staging-${RELEASE_ID}"
 BACKUP_DIR="${STATE_DIR}/document-root-backup-${RELEASE_ID}"
+NODE_PID_FILE="${STATE_DIR}/node.pid"
+NODE_LOG_FILE="${STATE_DIR}/node-${RELEASE_ID}.log"
 CONTENT_DIR="$FORGE_RELEASE_DIRECTORY"
 BACKUP_CREATED=0
 
@@ -217,6 +220,44 @@ RESTART_QUEUES() {
 	fi
 }
 
+NPM_HAS_SCRIPT() {
+	command -v "$FORGE_NODE" >/dev/null 2>&1 || return 1
+	"$FORGE_NODE" -e 'const fs=require("fs");const packageJSON=JSON.parse(fs.readFileSync("package.json","utf8"));process.exit(packageJSON.scripts && packageJSON.scripts[process.argv[1]] ? 0 : 1)' "$1"
+}
+
+START_NODE_APP() {
+	NPM_HAS_SCRIPT start || return 0
+	if [ -f "$NODE_PID_FILE" ]; then
+		OLD_PID=$(cat "$NODE_PID_FILE" 2>/dev/null || true)
+		case "$OLD_PID" in
+			''|*[!0-9]*) ;;
+			*)
+				if kill -0 "$OLD_PID" 2>/dev/null; then
+					kill "$OLD_PID" 2>/dev/null || true
+					for ATTEMPT in 1 2 3 4 5 6 7 8 9 10; do
+						kill -0 "$OLD_PID" 2>/dev/null || break
+						sleep 1
+					done
+					kill -0 "$OLD_PID" 2>/dev/null && kill -KILL "$OLD_PID" 2>/dev/null || true
+				fi
+				;;
+		esac
+		rm -f "$NODE_PID_FILE"
+	fi
+
+	echo "Starting npm start in background"
+	cd "$CONTENT_DIR"
+	nohup "$FORGE_NPM" start >"$NODE_LOG_FILE" 2>&1 </dev/null &
+	NODE_PID=$!
+	printf '%s\n' "$NODE_PID" > "$NODE_PID_FILE"
+	cd - >/dev/null
+	sleep 1
+	if ! kill -0 "$NODE_PID" 2>/dev/null; then
+		echo "npm start exited; inspect $NODE_LOG_FILE" >&2
+		rm -f "$NODE_PID_FILE"
+	fi
+}
+
 # POSIX shell functions are called without the dollar sign and parentheses
 # used by Forge's visual editor: CREATE_RELEASE, ACTIVATE_RELEASE,
 # RESTART_QUEUES.
@@ -230,8 +271,16 @@ fi
 
 if [ -f package.json ]; then
 	command -v "$FORGE_NPM" >/dev/null 2>&1 || { echo "npm is not available: $FORGE_NPM" >&2; exit 1; }
-	"$FORGE_NPM" ci || "$FORGE_NPM" install
-	"$FORGE_NPM" run build
+	"$FORGE_NPM" ci
+	if NPM_HAS_SCRIPT playwright:install; then
+		"$FORGE_NPM" run playwright:install
+	fi
+	if [ ! -e .env ] && [ ! -L .env ] && [ -f .env.example ]; then
+		cp .env.example .env
+	fi
+	if NPM_HAS_SCRIPT build; then
+		"$FORGE_NPM" run build
+	fi
 fi
 
 if [ -f "$CONTENT_DIR/scanner/package.json" ]; then
@@ -249,6 +298,7 @@ if [ -f artisan ]; then
 fi
 
 ACTIVATE_RELEASE
+START_NODE_APP
 RESTART_QUEUES
 `
 
